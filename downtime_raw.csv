@@ -1,0 +1,16 @@
+run_date,run_id,downtime_start,downtime_end,duration_minutes,downtime_area,downtime_reason
+2026-03-10,T089,07:19,07:58,0.65,Dec File,Defile missing pcf file on Kanzi
+2026-03-10,T089,09:15,09:25,0.17,Camera,Cameron investigate the no measurement on lane 5 and 6
+2026-03-16,T096,07:00,07:25,0.42,Camera; Forklift,Lane 5 and 6 reading without fruits; Mark overslept
+2026-03-16,T096,11:30,11:43,0.22,Server connection lost,Restart
+2026-03-17,T098,07:00,07:13,0.22,Sensor problem on dumper,Dirty on the sensor
+206-03-18,T100,07:00,07:18,0.3,List settings,Some modification
+2026-03-24,T101,07:00,08:45,1.75,Main machine,electrical wiring problem
+2026-03-30,T120,01:25,02:00,0.58,Sorting area,Tipped wrong variety of fruit
+2026-04-08,T133,08:21,09:33,1.2,SFU 1 pusher, bend and not working
+2026-04-15,T148,09:18,09:35,0.28,wrong_grower,Andrew hasn't updated the right grower
+2026-04-15,T150,14:30,14:49,0.32,bin_drop,Mark accidentally dropped 4 bins of ACN
+206-04-17,T154,07:00,07:23,0.38,sorting_area,Strange sound; Blue ask for continue running while waiting on his arrival
+206-04-17,T154,07:53,10:28,2.58,dumper_area,"power cut out, a light flashed / Blue and Cameron changed some cabel?"
+2026-04-20,T157,10:03,10:59,0.93,ibin_infeed,sensor under bin
+2026-04-20,T158,11:41,11:45,0.07,settings,"Soo forgot to close MCUap, cleaning out 1 lane"
