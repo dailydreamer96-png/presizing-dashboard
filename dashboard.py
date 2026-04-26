@@ -180,9 +180,11 @@ with tab_summary:
     # =========================
     elif period_choice == "Monthly":
         summary_df["year"] = summary_df["run_date"].dt.year.astype(int)
+        summary_df["month_num"] = summary_df["run_date"].dt.month
+        summary_df["month_name"] = summary_df["run_date"].dt.strftime("%b")
         summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
 
-        available_years = sorted(summary_df["year"].dropna().unique().tolist())
+        available_years = sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)
         selected_year = st.selectbox("Select Year", available_years)
 
         year_df = summary_df[summary_df["year"] == selected_year].copy()
@@ -196,10 +198,10 @@ with tab_summary:
         )
         selected_month = st.selectbox("Select Month", available_months)
 
-        chart_df = (
-            year_df.groupby("month_label", as_index=False)["bins_run"]
+        compare_df = (
+            summary_df.groupby(["year", "month_num", "month_name"], as_index=False)["bins_run"]
             .sum()
-            .sort_values("month_label")
+            .sort_values(["month_num", "year"])
         )
 
         summary_filtered = year_df[year_df["month_label"] == selected_month].copy()
@@ -209,16 +211,27 @@ with tab_summary:
 
         with left1:
             st.subheader("Total Bin Run Chart")
-            fig = px.line(
-                chart_df,
-                x="month_label",
-                y="bins_run",
-                markers=True,
-                labels={"month_label": "Month", "bins_run": "Total Bins"},
-                title="Total Bin Run Chart"
-            )
-            st.plotly_chart(fig, use_container_width=True)
 
+            fig = px.line(
+                compare_df,
+                x="month_name",
+                y="bins_run",
+                color="year",
+                markers=True,
+                category_orders={
+                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                },
+                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
+                title="Monthly Comparison by Year"
+            )
+
+            for trace in fig.data:
+                if str(trace.name) == str(selected_year):
+                    trace.line.width = 4
+                else:
+                    trace.line.width = 2
+
+            st.plotly_chart(fig, use_container_width=True)
     # =========================
     # WEEKLY VIEW
     # =========================
@@ -460,22 +473,35 @@ with tab_summary:
 with tab_quality:
     st.header("Quality")
 
+    # Build month list from runs
+    quality_runs = runs.copy()
+    quality_runs["month_label"] = quality_runs["run_date"].dt.to_period("M").astype(str)
+
+    # -----------------------------
+    # Filters + Preview
+    # -----------------------------
     q1, q2 = st.columns([1, 2])
 
     with q1:
         selected_variety = st.selectbox(
             "Variety",
-            ["All"] + sorted(runs["variety"].dropna().astype(str).unique().tolist()),
+            ["All"] + sorted(quality_runs["variety"].dropna().astype(str).unique().tolist()),
             key="quality_variety"
         )
 
         selected_grower = st.selectbox(
             "Grower",
-            ["All"] + sorted(runs["grower"].dropna().astype(str).unique().tolist()),
+            ["All"] + sorted(quality_runs["grower"].dropna().astype(str).unique().tolist()),
             key="quality_grower"
         )
 
-    quality_filtered = runs.copy()
+        selected_quality_month = st.selectbox(
+            "Month",
+            ["All"] + sorted(quality_runs["month_label"].dropna().astype(str).unique().tolist(), reverse=True),
+            key="quality_month"
+        )
+
+    quality_filtered = quality_runs.copy()
 
     if selected_variety != "All":
         quality_filtered = quality_filtered[
@@ -485,6 +511,11 @@ with tab_quality:
     if selected_grower != "All":
         quality_filtered = quality_filtered[
             quality_filtered["grower"].astype(str) == selected_grower
+        ]
+
+    if selected_quality_month != "All":
+        quality_filtered = quality_filtered[
+            quality_filtered["month_label"].astype(str) == selected_quality_month
         ]
 
     with q2:
@@ -501,6 +532,9 @@ with tab_quality:
             height=240
         )
 
+    # -----------------------------
+    # Quality Metrics + Chart
+    # -----------------------------
     st.subheader("Quality Overview")
 
     quality_cols = [
@@ -601,6 +635,9 @@ with tab_quality:
         else:
             st.info("No chart data available.")
 
+    # -----------------------------
+    # Defects + Modes
+    # -----------------------------
     st.subheader("Defects and Modes")
 
     top_defects = pd.DataFrame(columns=["defect", "count"])
@@ -610,6 +647,9 @@ with tab_quality:
     if batches is not None:
         batch_filtered = batches.copy()
 
+        if "receival_date_min" in batch_filtered.columns:
+            batch_filtered["month_label"] = batch_filtered["receival_date_min"].dt.to_period("M").astype(str)
+
         if selected_variety != "All" and "variety" in batch_filtered.columns:
             batch_filtered = batch_filtered[
                 batch_filtered["variety"].astype(str) == selected_variety
@@ -618,6 +658,11 @@ with tab_quality:
         if selected_grower != "All" and "grower" in batch_filtered.columns:
             batch_filtered = batch_filtered[
                 batch_filtered["grower"].astype(str) == selected_grower
+            ]
+
+        if selected_quality_month != "All" and "month_label" in batch_filtered.columns:
+            batch_filtered = batch_filtered[
+                batch_filtered["month_label"].astype(str) == selected_quality_month
             ]
 
         defect_cols = [c for c in ["defect_1", "defect_2", "defect_3"] if c in batch_filtered.columns]
@@ -642,8 +687,9 @@ with tab_quality:
                 changes_filtered["variety"].astype(str) == selected_variety
             ]
 
-        if "run_id" in changes_filtered.columns and selected_grower != "All":
-            run_ids = quality_filtered["run_id"].dropna().astype(str).unique().tolist()
+        # link month and grower using run_ids from already filtered runs
+        run_ids = quality_filtered["run_id"].dropna().astype(str).unique().tolist()
+        if "run_id" in changes_filtered.columns:
             changes_filtered = changes_filtered[
                 changes_filtered["run_id"].astype(str).isin(run_ids)
             ]
@@ -700,7 +746,7 @@ with tab_mode:
 
         if "run_id" in mode_df.columns and "run_id" in runs.columns:
             mode_df = mode_df.merge(
-                runs[["run_id", "batch_id", "grower", "variety"]],
+                runs[["run_id", "batch_id", "grower", "variety", "run_date"]],
                 on="run_id",
                 how="left",
                 suffixes=("", "_run")
@@ -717,7 +763,14 @@ with tab_mode:
                 how="left"
             )
 
-        f1, f2 = st.columns(2)
+        # add month label for filtering if run_date exists
+        if "run_date" in mode_df.columns:
+            mode_df["month_label"] = pd.to_datetime(mode_df["run_date"], errors="coerce").dt.to_period("M").astype(str)
+
+        # -----------------------------
+        # Filters
+        # -----------------------------
+        f1, f2, f3 = st.columns(3)
 
         with f1:
             available_varieties = ["All"]
@@ -756,16 +809,39 @@ with tab_mode:
                 filtered_mode["decfile_version"].astype(str) == selected_version
             ]
 
+        with f3:
+            available_months = ["All"]
+            if "month_label" in filtered_mode.columns:
+                month_values = filtered_mode["month_label"].dropna().astype(str).unique().tolist()
+                available_months += sorted(month_values, reverse=True)
+
+            selected_mode_month = st.selectbox(
+                "Month",
+                available_months,
+                key="mode_month_selector"
+            )
+
+        if selected_mode_month != "All" and "month_label" in filtered_mode.columns:
+            filtered_mode = filtered_mode[
+                filtered_mode["month_label"].astype(str) == selected_mode_month
+            ]
+
+        # -----------------------------
+        # Preview
+        # -----------------------------
         st.subheader("Filter Mode Preview")
         preview_cols = [
             c for c in [
-                "run_id", "grower", "variety", "batch_id", "decfile_version",
+                "run_date", "run_id", "grower", "variety", "batch_id", "decfile_version",
                 "change_id", "mode", "check_class", "change_time", "action",
                 "boundary_before", "boundary_after", "test_drop_result", "reason", "notes_changes"
             ] if c in filtered_mode.columns
         ]
         st.dataframe(filtered_mode[preview_cols].head(20), use_container_width=True, height=250)
 
+        # -----------------------------
+        # Rankings
+        # -----------------------------
         st.subheader("Mode Rankings")
 
         adjusted_rank = pd.DataFrame(columns=["mode", "count", "top_3_boundaries", "all_boundaries"])
@@ -819,3 +895,97 @@ with tab_mode:
                 st.dataframe(checked_rank, use_container_width=True, height=320)
             else:
                 st.info("No checked mode list available.")
+
+        # -----------------------------
+        # Selected mode details
+        # -----------------------------
+        st.divider()
+        st.subheader("Selected Mode Details")
+
+        mode_options = []
+        if "mode" in filtered_mode.columns:
+            mode_options = sorted(filtered_mode["mode"].dropna().astype(str).unique().tolist())
+
+        if mode_options:
+            selected_mode_name = st.selectbox("Choose Mode", mode_options, key="selected_mode_detail")
+            selected_mode_df = filtered_mode[filtered_mode["mode"].astype(str) == selected_mode_name].copy()
+
+            # summary metrics
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Total Records", len(selected_mode_df))
+
+            with m2:
+                if "action" in selected_mode_df.columns:
+                    adjust_count = selected_mode_df["action"].astype(str).str.lower().str.startswith("a").sum()
+                    st.metric("Adjust Records", int(adjust_count))
+                else:
+                    st.metric("Adjust Records", "N/A")
+
+            with m3:
+                if "action" in selected_mode_df.columns:
+                    check_count = selected_mode_df["action"].astype(str).str.lower().str.startswith("c").sum()
+                    st.metric("Check Records", int(check_count))
+                else:
+                    st.metric("Check Records", "N/A")
+
+            d1, d2, d3 = st.columns(3)
+
+            with d1:
+                st.write("Common Reasons")
+                if "reason" in selected_mode_df.columns:
+                    reason_df = (
+                        selected_mode_df["reason"]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .value_counts()
+                        .reset_index()
+                    )
+                    reason_df.columns = ["reason", "count"]
+                    if not reason_df.empty:
+                        st.dataframe(reason_df, use_container_width=True, height=240)
+                    else:
+                        st.info("No reason data available.")
+                else:
+                    st.info("No reason column available.")
+
+            with d2:
+                st.write("Common Checked Classes")
+                if "check_class" in selected_mode_df.columns:
+                    class_df = (
+                        selected_mode_df["check_class"]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .value_counts()
+                        .reset_index()
+                    )
+                    class_df.columns = ["check_class", "count"]
+                    if not class_df.empty:
+                        st.dataframe(class_df, use_container_width=True, height=240)
+                    else:
+                        st.info("No class data available.")
+                else:
+                    st.info("No check class column available.")
+
+            with d3:
+                st.write("Common Boundaries")
+                if "boundary_after" in selected_mode_df.columns:
+                    boundary_df = (
+                        selected_mode_df["boundary_after"]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .value_counts()
+                        .reset_index()
+                    )
+                    boundary_df.columns = ["boundary", "count"]
+                    if not boundary_df.empty:
+                        st.dataframe(boundary_df, use_container_width=True, height=240)
+                    else:
+                        st.info("No boundary data available.")
+                else:
+                    st.info("No boundary column available.")
+        else:
+            st.info("No modes available for the current filters.")
