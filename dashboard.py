@@ -744,6 +744,7 @@ with tab_mode:
     else:
         mode_df = changes.copy()
 
+        # Link changes -> runs
         if "run_id" in mode_df.columns and "run_id" in runs.columns:
             mode_df = mode_df.merge(
                 runs[["run_id", "batch_id", "grower", "variety", "run_date"]],
@@ -752,6 +753,7 @@ with tab_mode:
                 suffixes=("", "_run")
             )
 
+        # Link runs -> batches
         if batches is not None and "batch_id" in mode_df.columns and "batch_id" in batches.columns:
             batch_link_cols = [
                 c for c in ["batch_id", "decfile_version", "defect_1", "defect_2", "defect_3"]
@@ -762,10 +764,6 @@ with tab_mode:
                 on="batch_id",
                 how="left"
             )
-
-        # add month label for filtering if run_date exists
-        if "run_date" in mode_df.columns:
-            mode_df["month_label"] = pd.to_datetime(mode_df["run_date"], errors="coerce").dt.to_period("M").astype(str)
 
         # -----------------------------
         # Filters
@@ -793,6 +791,24 @@ with tab_mode:
             ]
 
         with f2:
+            available_growers = ["All"]
+            if "grower" in filtered_mode.columns:
+                available_growers += sorted(
+                    filtered_mode["grower"].dropna().astype(str).unique().tolist()
+                )
+
+            selected_mode_grower = st.selectbox(
+                "Grower",
+                available_growers,
+                key="mode_grower_selector"
+            )
+
+        if selected_mode_grower != "All" and "grower" in filtered_mode.columns:
+            filtered_mode = filtered_mode[
+                filtered_mode["grower"].astype(str) == selected_mode_grower
+            ]
+
+        with f3:
             available_versions = ["All"]
             if "decfile_version" in filtered_mode.columns:
                 version_values = filtered_mode["decfile_version"].dropna().astype(str).unique().tolist()
@@ -809,183 +825,171 @@ with tab_mode:
                 filtered_mode["decfile_version"].astype(str) == selected_version
             ]
 
-        with f3:
-            available_months = ["All"]
-            if "month_label" in filtered_mode.columns:
-                month_values = filtered_mode["month_label"].dropna().astype(str).unique().tolist()
-                available_months += sorted(month_values, reverse=True)
+        # -----------------------------
+        # Top defects table
+        # -----------------------------
+        st.subheader("Top Defects")
 
-            selected_mode_month = st.selectbox(
-                "Month",
-                available_months,
-                key="mode_month_selector"
+        top_defects_mode = pd.DataFrame(columns=["defect", "count"])
+
+        defect_cols_mode = [c for c in ["defect_1", "defect_2", "defect_3"] if c in filtered_mode.columns]
+        if defect_cols_mode:
+            mode_defects = (
+                filtered_mode[defect_cols_mode]
+                .melt(value_name="defect")["defect"]
+                .dropna()
+                .astype(str)
+                .str.strip()
             )
+            mode_defects = mode_defects[mode_defects != ""]
+            if not mode_defects.empty:
+                top_defects_mode = mode_defects.value_counts().reset_index()
+                top_defects_mode.columns = ["defect", "count"]
 
-        if selected_mode_month != "All" and "month_label" in filtered_mode.columns:
-            filtered_mode = filtered_mode[
-                filtered_mode["month_label"].astype(str) == selected_mode_month
-            ]
-
-        # -----------------------------
-        # Preview
-        # -----------------------------
-        st.subheader("Filter Mode Preview")
-        preview_cols = [
-            c for c in [
-                "run_date", "run_id", "grower", "variety", "batch_id", "decfile_version",
-                "change_id", "mode", "check_class", "change_time", "action",
-                "boundary_before", "boundary_after", "test_drop_result", "reason", "notes_changes"
-            ] if c in filtered_mode.columns
-        ]
-        st.dataframe(filtered_mode[preview_cols].head(20), use_container_width=True, height=250)
+        if not top_defects_mode.empty:
+            st.dataframe(top_defects_mode, use_container_width=True, height=240)
+        else:
+            st.info("No defect data available for the current filters.")
 
         # -----------------------------
-        # Rankings
+        # Top adjusted mode table
         # -----------------------------
-        st.subheader("Mode Rankings")
+        st.subheader("Top Adjusted Modes")
 
-        adjusted_rank = pd.DataFrame(columns=["mode", "count", "top_3_boundaries", "all_boundaries"])
-        checked_rank = pd.DataFrame(columns=["mode", "count", "top_3_boundaries", "all_boundaries"])
+        adjusted_mode_table = pd.DataFrame(columns=["mode", "check_class", "count", "all_boundaries"])
 
         if "mode" in filtered_mode.columns and "action" in filtered_mode.columns:
             adjusted = filtered_mode[
                 filtered_mode["action"].astype(str).str.lower().str.startswith("a")
             ].copy()
 
-            checked = filtered_mode[
-                filtered_mode["action"].astype(str).str.lower().str.startswith("c")
-            ].copy()
-
             if not adjusted.empty:
                 rows = []
-                for mode_name, grp in adjusted.groupby("mode"):
-                    top3, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
+                group_cols = ["mode"]
+                if "check_class" in adjusted.columns:
+                    group_cols.append("check_class")
+
+                for keys, grp in adjusted.groupby(group_cols, dropna=False):
+                    if isinstance(keys, tuple):
+                        mode_name = keys[0]
+                        check_class = keys[1]
+                    else:
+                        mode_name = keys
+                        check_class = ""
+
+                    _, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
+
                     rows.append({
                         "mode": mode_name,
+                        "check_class": check_class,
                         "count": len(grp),
-                        "top_3_boundaries": top3,
                         "all_boundaries": allb
                     })
-                adjusted_rank = pd.DataFrame(rows).sort_values(["count", "mode"], ascending=[False, True])
 
-            if not checked.empty:
-                rows = []
-                for mode_name, grp in checked.groupby("mode"):
-                    top3, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
-                    rows.append({
-                        "mode": mode_name,
-                        "count": len(grp),
-                        "top_3_boundaries": top3,
-                        "all_boundaries": allb
-                    })
-                checked_rank = pd.DataFrame(rows).sort_values(["count", "mode"], ascending=[False, True])
+                adjusted_mode_table = (
+                    pd.DataFrame(rows)
+                    .sort_values(["count", "mode", "check_class"], ascending=[False, True, True])
+                )
 
-        b1, b2 = st.columns(2)
-
-        with b1:
-            st.write("Adjusted Modes (Descending)")
-            if not adjusted_rank.empty:
-                st.dataframe(adjusted_rank, use_container_width=True, height=320)
-            else:
-                st.info("No adjusted mode list available.")
-
-        with b2:
-            st.write("Checked Modes (Descending)")
-            if not checked_rank.empty:
-                st.dataframe(checked_rank, use_container_width=True, height=320)
-            else:
-                st.info("No checked mode list available.")
-
-        # -----------------------------
-        # Selected mode details
-        # -----------------------------
-        st.divider()
-        st.subheader("Selected Mode Details")
-
-        mode_options = []
-        if "mode" in filtered_mode.columns:
-            mode_options = sorted(filtered_mode["mode"].dropna().astype(str).unique().tolist())
-
-        if mode_options:
-            selected_mode_name = st.selectbox("Choose Mode", mode_options, key="selected_mode_detail")
-            selected_mode_df = filtered_mode[filtered_mode["mode"].astype(str) == selected_mode_name].copy()
-
-            # summary metrics
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("Total Records", len(selected_mode_df))
-
-            with m2:
-                if "action" in selected_mode_df.columns:
-                    adjust_count = selected_mode_df["action"].astype(str).str.lower().str.startswith("a").sum()
-                    st.metric("Adjust Records", int(adjust_count))
-                else:
-                    st.metric("Adjust Records", "N/A")
-
-            with m3:
-                if "action" in selected_mode_df.columns:
-                    check_count = selected_mode_df["action"].astype(str).str.lower().str.startswith("c").sum()
-                    st.metric("Check Records", int(check_count))
-                else:
-                    st.metric("Check Records", "N/A")
-
-            d1, d2, d3 = st.columns(3)
-
-            with d1:
-                st.write("Common Reasons")
-                if "reason" in selected_mode_df.columns:
-                    reason_df = (
-                        selected_mode_df["reason"]
-                        .dropna()
-                        .astype(str)
-                        .str.strip()
-                        .value_counts()
-                        .reset_index()
-                    )
-                    reason_df.columns = ["reason", "count"]
-                    if not reason_df.empty:
-                        st.dataframe(reason_df, use_container_width=True, height=240)
-                    else:
-                        st.info("No reason data available.")
-                else:
-                    st.info("No reason column available.")
-
-            with d2:
-                st.write("Common Checked Classes")
-                if "check_class" in selected_mode_df.columns:
-                    class_df = (
-                        selected_mode_df["check_class"]
-                        .dropna()
-                        .astype(str)
-                        .str.strip()
-                        .value_counts()
-                        .reset_index()
-                    )
-                    class_df.columns = ["check_class", "count"]
-                    if not class_df.empty:
-                        st.dataframe(class_df, use_container_width=True, height=240)
-                    else:
-                        st.info("No class data available.")
-                else:
-                    st.info("No check class column available.")
-
-            with d3:
-                st.write("Common Boundaries")
-                if "boundary_after" in selected_mode_df.columns:
-                    boundary_df = (
-                        selected_mode_df["boundary_after"]
-                        .dropna()
-                        .astype(str)
-                        .str.strip()
-                        .value_counts()
-                        .reset_index()
-                    )
-                    boundary_df.columns = ["boundary", "count"]
-                    if not boundary_df.empty:
-                        st.dataframe(boundary_df, use_container_width=True, height=240)
-                    else:
-                        st.info("No boundary data available.")
-                else:
-                    st.info("No boundary column available.")
+        if not adjusted_mode_table.empty:
+            st.dataframe(adjusted_mode_table, use_container_width=True, height=320)
         else:
-            st.info("No modes available for the current filters.")
+            st.info("No adjusted mode data available for the current filters.")
+
+        # -----------------------------
+        # Defect selector from reasons
+        # -----------------------------
+        st.subheader("Defect Selector from Recorded Reasons")
+
+        reason_mode_df = filtered_mode.copy()
+
+        available_reason_defects = []
+        if "reason" in reason_mode_df.columns:
+            split_reasons = (
+                reason_mode_df["reason"]
+                .fillna("")
+                .astype(str)
+                .str.split(",")
+                .explode()
+                .astype(str)
+                .str.strip()
+            )
+            split_reasons = split_reasons[split_reasons != ""]
+            available_reason_defects = sorted(split_reasons.dropna().unique().tolist())
+
+        selected_reason_defect = st.selectbox(
+            "Select defect from recorded reasons",
+            ["All"] + available_reason_defects,
+            key="mode_reason_defect_selector"
+        )
+
+        if selected_reason_defect != "All" and "reason" in reason_mode_df.columns and "mode" in reason_mode_df.columns:
+            reason_mode_df["reason_split"] = (
+                reason_mode_df["reason"]
+                .fillna("")
+                .astype(str)
+                .str.split(",")
+            )
+            reason_mode_df = reason_mode_df.explode("reason_split")
+            reason_mode_df["reason_split"] = reason_mode_df["reason_split"].astype(str).str.strip()
+
+            matched_df = reason_mode_df[
+                reason_mode_df["reason_split"].astype(str) == selected_reason_defect
+            ].copy()
+
+            if not matched_df.empty:
+                related_modes = (
+                    matched_df.groupby(["mode", "check_class"], as_index=False)
+                    .agg(
+                        count=("mode", "size"),
+                        boundaries=("boundary_after", lambda x: ", ".join(sorted(set(x.dropna().astype(str)))))
+                    )
+                    .sort_values(["count", "mode"], ascending=[False, True])
+                )
+
+                st.write(f"Modes related to: {selected_reason_defect}")
+                st.dataframe(related_modes, use_container_width=True, height=260)
+            else:
+                st.info("No matching modes found for this defect.")
+        else:
+            st.write("Choose a defect above to see related modes.")
+
+        # -----------------------------
+        # Mode filter to show reasons
+        # -----------------------------
+        st.subheader("Mode Reasons")
+
+        available_modes_bottom = []
+        if "mode" in filtered_mode.columns:
+            available_modes_bottom = sorted(filtered_mode["mode"].dropna().astype(str).unique().tolist())
+
+        selected_mode_bottom = st.selectbox(
+            "Select mode",
+            ["All"] + available_modes_bottom,
+            key="mode_reason_selector"
+        )
+
+        if selected_mode_bottom != "All" and "mode" in filtered_mode.columns:
+            mode_reason_filtered = filtered_mode[
+                filtered_mode["mode"].astype(str) == selected_mode_bottom
+            ].copy()
+
+            if "reason" in mode_reason_filtered.columns:
+                reason_table = (
+                    mode_reason_filtered["reason"]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .value_counts()
+                    .reset_index()
+                )
+                reason_table.columns = ["reason", "count"]
+
+                if not reason_table.empty:
+                    st.dataframe(reason_table, use_container_width=True, height=260)
+                else:
+                    st.info("No reasons recorded for this mode.")
+            else:
+                st.info("No reason column available.")
+        else:
+            st.write("Choose a mode above to see its recorded reasons.")
