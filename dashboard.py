@@ -134,6 +134,18 @@ tab_summary, tab_quality, tab_mode = st.tabs(["Summary", "Quality", "Mode"])
 with tab_summary:
     st.header("Summary")
 
+    latest_date = runs["run_date"].max()
+    top_info_left, top_info_right = st.columns([2, 1])
+
+    with top_info_left:
+        st.caption(
+            f"Last updated: {latest_date.strftime('%Y-%m-%d')}"
+            if pd.notna(latest_date) else "Last updated: N/A"
+        )
+
+    with top_info_right:
+        st.caption("Overview of production, performance, and downtime")
+
     period_choice = st.radio(
         "Period Type",
         ["Yearly", "Monthly", "Weekly"],
@@ -142,6 +154,21 @@ with tab_summary:
 
     summary_df = runs.copy()
     summary_df = summary_df.dropna(subset=["run_date"]).copy()
+
+    def format_delta(current, previous, mode="number"):
+        if pd.isna(current) or pd.isna(previous):
+            return "N/A"
+
+        if mode == "percent":
+            if previous == 0:
+                return "N/A"
+            delta_pct = ((current - previous) / previous) * 100
+            return f"{delta_pct:+.1f}% vs prev"
+
+        if mode == "float":
+            return f"{current - previous:+.1f} vs prev"
+
+        return f"{int(current - previous):+,.0f} vs prev"
 
     # =========================
     # YEARLY VIEW
@@ -161,19 +188,8 @@ with tab_summary:
         summary_filtered = summary_df[summary_df["year"] == selected_year].copy()
         selected_period_label = str(selected_year)
 
-        left1, left2, right = st.columns([2.2, 1.7, 1])
-
-        with left1:
-            st.subheader("Total Bin Run Chart")
-            fig = px.bar(
-                chart_df,
-                x="year",
-                y="bins_run",
-                labels={"year": "Year", "bins_run": "Total Bins"},
-                title="Total Bin Run Chart"
-            )
-            fig.update_xaxes(type="category")
-            st.plotly_chart(fig, use_container_width=True)
+        prev_year = selected_year - 1
+        previous_filtered = summary_df[summary_df["year"] == prev_year].copy()
 
     # =========================
     # MONTHLY VIEW
@@ -196,46 +212,32 @@ with tab_summary:
             .sort_values()
             .tolist()
         )
-        selected_month = st.selectbox("Select Month", available_months)
+        selected_month = st.selectbox("Select Month", ["All"] + available_months)
 
-        compare_df = (
+        chart_df = (
             summary_df.groupby(["year", "month_num", "month_name"], as_index=False)["bins_run"]
             .sum()
-            .sort_values(["month_num", "year"])
+            .sort_values(["month_num", "year"], ascending=[True, False])
         )
 
-        summary_filtered = year_df[year_df["month_label"] == selected_month].copy()
-        selected_period_label = selected_month
+        if selected_month == "All":
+            summary_filtered = year_df.copy()
+            selected_period_label = f"{selected_year} (All Months)"
+            prev_month = None
+            previous_filtered = pd.DataFrame()
+        else:
+            summary_filtered = year_df[year_df["month_label"] == selected_month].copy()
+            selected_period_label = selected_month
 
-        left1, left2, right = st.columns([2.2, 1.7, 1])
+            month_order = available_months
+            current_idx = month_order.index(selected_month)
+            prev_month = month_order[current_idx - 1] if current_idx > 0 else None
+            previous_filtered = year_df[year_df["month_label"] == prev_month].copy() if prev_month else pd.DataFrame()
 
-        with left1:
-            st.subheader("Total Bin Run Chart")
-
-            fig = px.line(
-                compare_df,
-                x="month_name",
-                y="bins_run",
-                color="year",
-                markers=True,
-                category_orders={
-                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                },
-                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
-                title="Monthly Comparison by Year"
-            )
-
-            for trace in fig.data:
-                if str(trace.name) == str(selected_year):
-                    trace.line.width = 4
-                else:
-                    trace.line.width = 2
-
-            st.plotly_chart(fig, use_container_width=True)
     # =========================
     # WEEKLY VIEW
     # =========================
-    elif period_choice == "Weekly":
+    else:
         summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
         summary_df["week_start"] = summary_df["run_date"] - pd.to_timedelta(summary_df["run_date"].dt.weekday, unit="D")
         summary_df["week_label"] = "W/C " + summary_df["week_start"].dt.strftime("%Y-%m-%d")
@@ -247,9 +249,12 @@ with tab_summary:
             .sort_values()
             .tolist()
         )
-        selected_month = st.selectbox("Select Month", available_months)
+        selected_month = st.selectbox("Select Month", ["All"] + available_months)
 
-        month_df = summary_df[summary_df["month_label"] == selected_month].copy()
+        if selected_month == "All":
+            month_df = summary_df.copy()
+        else:
+            month_df = summary_df[summary_df["month_label"] == selected_month].copy()
 
         available_weeks = (
             month_df[["week_label", "week_start"]]
@@ -257,7 +262,7 @@ with tab_summary:
             .sort_values("week_start")["week_label"]
             .tolist()
         )
-        selected_week = st.selectbox("Select Week", available_weeks)
+        selected_week = st.selectbox("Select Week", ["All"] + available_weeks)
 
         chart_df = (
             month_df.groupby(["week_label", "week_start"], as_index=False)["bins_run"]
@@ -265,24 +270,116 @@ with tab_summary:
             .sort_values("week_start")
         )
 
-        summary_filtered = month_df[month_df["week_label"] == selected_week].copy()
-        selected_period_label = selected_week
+        if selected_week == "All":
+            summary_filtered = month_df.copy()
+            if selected_month == "All":
+                selected_period_label = "All Weeks"
+            else:
+                selected_period_label = f"{selected_month} (All Weeks)"
+            prev_week = None
+            previous_filtered = pd.DataFrame()
+        else:
+            summary_filtered = month_df[month_df["week_label"] == selected_week].copy()
+            selected_period_label = selected_week
 
-        left1, left2, right = st.columns([2.2, 1.7, 1])
-
-        with left1:
-            st.subheader("Total Bin Run Chart")
-            fig = px.bar(
-                chart_df,
-                x="week_label",
-                y="bins_run",
-                labels={"week_label": "Week", "bins_run": "Total Bins"},
-                title="Total Bin Run Chart"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            week_order = available_weeks
+            current_idx = week_order.index(selected_week)
+            prev_week = week_order[current_idx - 1] if current_idx > 0 else None
+            previous_filtered = month_df[month_df["week_label"] == prev_week].copy() if prev_week else pd.DataFrame()
 
     # =========================
-    # SHARED SUMMARY BLOCK
+    # DOWNTIME FILTER FOR CURRENT PERIOD
+    # =========================
+    current_downtime = None
+    prev_downtime = None
+    downtime_filtered = pd.DataFrame()
+
+    if downtime is not None and "run_date" in downtime.columns:
+        downtime_df_for_kpi = downtime.copy().dropna(subset=["run_date"]).copy()
+
+        if period_choice == "Yearly":
+            downtime_df_for_kpi["year"] = downtime_df_for_kpi["run_date"].dt.year.astype(int)
+            current_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["year"] == selected_year].copy()
+            prev_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["year"] == prev_year].copy()
+
+        elif period_choice == "Monthly":
+            downtime_df_for_kpi["year"] = downtime_df_for_kpi["run_date"].dt.year.astype(int)
+            downtime_df_for_kpi["month_label"] = downtime_df_for_kpi["run_date"].dt.to_period("M").astype(str)
+
+            if selected_month == "All":
+                current_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["year"] == selected_year].copy()
+                prev_dt_filtered = pd.DataFrame()
+            else:
+                current_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["month_label"] == selected_month].copy()
+                prev_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["month_label"] == prev_month].copy() if prev_month else pd.DataFrame()
+
+        else:
+            downtime_df_for_kpi["month_label"] = downtime_df_for_kpi["run_date"].dt.to_period("M").astype(str)
+            downtime_df_for_kpi["week_start"] = downtime_df_for_kpi["run_date"] - pd.to_timedelta(downtime_df_for_kpi["run_date"].dt.weekday, unit="D")
+            downtime_df_for_kpi["week_label"] = "W/C " + downtime_df_for_kpi["week_start"].dt.strftime("%Y-%m-%d")
+
+            if selected_month == "All":
+                current_dt_filtered = downtime_df_for_kpi.copy()
+                prev_dt_filtered = pd.DataFrame()
+            elif selected_week == "All":
+                current_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["month_label"] == selected_month].copy()
+                prev_dt_filtered = pd.DataFrame()
+            else:
+                current_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["week_label"] == selected_week].copy()
+                prev_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["week_label"] == prev_week].copy() if prev_week else pd.DataFrame()
+
+        downtime_filtered = current_dt_filtered.copy()
+        current_downtime = current_dt_filtered["duration_minutes"].sum() if "duration_minutes" in current_dt_filtered.columns else None
+        prev_downtime = prev_dt_filtered["duration_minutes"].sum() if "duration_minutes" in prev_dt_filtered.columns and not prev_dt_filtered.empty else None
+
+    # =========================
+    # KPI ROW
+    # =========================
+    current_total_bins = summary_filtered["bins_run"].sum() if "bins_run" in summary_filtered.columns else None
+    prev_total_bins = previous_filtered["bins_run"].sum() if "bins_run" in previous_filtered.columns and not previous_filtered.empty else None
+
+    current_avg_speed = summary_filtered[speed_cols].stack().mean() if speed_cols else None
+    prev_avg_speed = previous_filtered[speed_cols].stack().mean() if speed_cols and not previous_filtered.empty else None
+
+    current_retip = summary_filtered["retip"].sum() if "retip" in summary_filtered.columns else None
+    prev_retip = previous_filtered["retip"].sum() if "retip" in previous_filtered.columns and not previous_filtered.empty else None
+
+    k1, k2, k3, k4 = st.columns(4)
+
+    with k1:
+        st.metric(
+            "Total Bins",
+            f"{int(current_total_bins):,}" if pd.notna(current_total_bins) else "N/A",
+            delta=format_delta(current_total_bins, prev_total_bins, mode="percent"),
+            delta_color="normal"
+        )
+
+    with k2:
+        st.metric(
+            "Avg Speed",
+            f"{current_avg_speed:.1f}" if pd.notna(current_avg_speed) else "N/A",
+            delta=format_delta(current_avg_speed, prev_avg_speed, mode="float"),
+            delta_color="normal"
+        )
+
+    with k3:
+        st.metric(
+            "Retip",
+            f"{int(current_retip):,}" if pd.notna(current_retip) else "N/A",
+            delta=format_delta(current_retip, prev_retip, mode="number"),
+            delta_color="inverse"
+        )
+
+    with k4:
+        st.metric(
+            "Downtime",
+            f"{int(current_downtime):,} mins" if pd.notna(current_downtime) else "N/A",
+            delta=format_delta(current_downtime, prev_downtime, mode="number"),
+            delta_color="inverse"
+        )
+
+    # =========================
+    # MAIN OVERVIEW ROW
     # =========================
     bins_by_variety = (
         summary_filtered.groupby("variety", as_index=False)["bins_run"]
@@ -290,32 +387,147 @@ with tab_summary:
         .sort_values("bins_run", ascending=False)
     )
 
-    avg_speed = None
-    if speed_cols:
-        avg_speed = summary_filtered[speed_cols].stack().mean()
+    total_bins_period = bins_by_variety["bins_run"].sum() if not bins_by_variety.empty else 0
+    bins_by_variety["share_pct"] = (
+        (bins_by_variety["bins_run"] / total_bins_period) * 100
+        if total_bins_period else 0
+    )
 
-    total_retip = summary_filtered["retip"].sum() if "retip" in summary_filtered.columns else None
-
-    with left2:
-        st.subheader(f"Total Bin Variety ({selected_period_label})")
-        st.dataframe(
-            bins_by_variety.rename(columns={"bins_run": "total_bins"}),
-            use_container_width=True,
-            height=260
+    display_bins_by_variety = bins_by_variety.copy()
+    display_bins_by_variety = display_bins_by_variety.rename(columns={
+        "variety": "Variety",
+        "bins_run": "Total Bins",
+        "share_pct": "Share %"
+    })
+    if "Total Bins" in display_bins_by_variety.columns:
+        display_bins_by_variety["Total Bins"] = display_bins_by_variety["Total Bins"].map(
+            lambda x: f"{int(x):,}" if pd.notna(x) else ""
+        )
+    if "Share %" in display_bins_by_variety.columns:
+        display_bins_by_variety["Share %"] = display_bins_by_variety["Share %"].map(
+            lambda x: f"{x:.1f}%"
         )
 
-    with right:
-        st.subheader("Average Speed")
-        st.metric("Bins / Hour", f"{avg_speed:.1f}" if pd.notna(avg_speed) else "N/A")
+    main_left, main_right = st.columns([2.2, 1.4])
 
-        st.subheader("Total Retip")
-        st.metric("Retip", f"{int(total_retip)}" if pd.notna(total_retip) else "N/A")
+    with main_left:
+        st.subheader("Total Bins Trend")
+
+        if period_choice == "Yearly":
+            fig = px.bar(
+                chart_df,
+                x="year",
+                y="bins_run",
+                labels={"year": "Year", "bins_run": "Total Bins"},
+                title="Total Bins by Year",
+                color_discrete_sequence=["#3B82F6"]
+            )
+            fig.update_xaxes(type="category")
+
+        elif period_choice == "Monthly":
+            fig = px.line(
+                chart_df,
+                x="month_name",
+                y="bins_run",
+                color="year",
+                markers=True,
+                category_orders={
+                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                    "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
+                },
+                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
+                title="Monthly Comparison by Year"
+            )
+            for trace in fig.data:
+                if str(trace.name) == str(selected_year):
+                    trace.line.width = 4
+                else:
+                    trace.line.width = 2
+
+            fig.update_layout(
+                legend_title_text="Year",
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02
+                )
+            )
+
+        else:
+            fig = px.bar(
+                chart_df,
+                x="week_label",
+                y="bins_run",
+                labels={"week_label": "Week", "bins_run": "Total Bins"},
+                title="Weekly Bins",
+                color_discrete_sequence=["#3B82F6"]
+            )
+
+        fig.update_layout(
+            hovermode="x unified",
+            height=430,
+            margin=dict(l=20, r=20, t=50, b=20)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with main_right:
+        st.subheader(f"Bins by Variety ({selected_period_label})")
+        st.dataframe(
+            display_bins_by_variety.head(10),
+            use_container_width=True,
+            height=430
+        )
 
     # =========================
-    # VARIETY SUMMARY BLOCK
+    # TOP CONTRIBUTORS
+    # =========================
+    grower_bins = (
+        summary_filtered.groupby("grower", as_index=False)["bins_run"]
+        .sum()
+        .sort_values("bins_run", ascending=False)
+    )
+
+    top_variety = str(bins_by_variety.iloc[0]["variety"]) if not bins_by_variety.empty else "N/A"
+    top_grower = str(grower_bins.iloc[0]["grower"]) if not grower_bins.empty else "N/A"
+
+    retip_focus_grower = "N/A"
+    if "retip" in summary_filtered.columns:
+        retip_by_grower = (
+            summary_filtered.groupby("grower", as_index=False)["retip"]
+            .sum()
+            .sort_values("retip", ascending=False)
+        )
+        if not retip_by_grower.empty:
+            retip_focus_grower = str(retip_by_grower.iloc[0]["grower"])
+
+    top_downtime_area = "N/A"
+    if not downtime_filtered.empty and "downtime_area" in downtime_filtered.columns:
+        area_counts = downtime_filtered["downtime_area"].dropna().astype(str).value_counts()
+        if not area_counts.empty:
+            top_downtime_area = area_counts.index[0]
+
+    st.subheader("Top Contributors")
+    t1, t2, t3, t4 = st.columns(4)
+
+    with t1:
+        st.metric("Top Variety", top_variety)
+
+    with t2:
+        st.metric("Top Grower", top_grower)
+
+    with t3:
+        st.metric("Retip Focus Grower", retip_focus_grower)
+
+    with t4:
+        st.metric("Top Downtime Area", top_downtime_area)
+
+    # =========================
+    # VARIETY SUMMARY
     # =========================
     st.divider()
-    st.subheader("Variety Summary Within Selected Period")
+    st.subheader("Variety Summary")
 
     available_varieties = sorted(summary_filtered["variety"].dropna().astype(str).unique().tolist())
     selected_summary_variety = st.selectbox(
@@ -330,18 +542,25 @@ with tab_summary:
             variety_filtered["variety"].astype(str) == selected_summary_variety
         ]
 
-    total_bin_variety = variety_filtered["bins_run"].sum() if "bins_run" in variety_filtered.columns else None
-
     bins_by_grower_variety = (
-        variety_filtered.groupby("grower", as_index=False)["bins_run"]
-        .sum()
-        .sort_values("bins_run", ascending=False)
+        variety_filtered.groupby("grower", as_index=False)
+        .agg(
+            total_bins=("bins_run", "sum"),
+            period_start=("run_date", "min"),
+            period_end=("run_date", "max")
+        )
+        .sort_values("total_bins", ascending=False)
     )
 
-    avg_speed_variety = None
-    if speed_cols:
-        avg_speed_variety = variety_filtered[speed_cols].stack().mean()
+    if not bins_by_grower_variety.empty:
+        bins_by_grower_variety["period"] = (
+            bins_by_grower_variety["period_start"].dt.strftime("%Y-%m-%d")
+            + " to "
+            + bins_by_grower_variety["period_end"].dt.strftime("%Y-%m-%d")
+        )
+        bins_by_grower_variety = bins_by_grower_variety[["grower", "period", "total_bins"]]
 
+    avg_speed_variety = variety_filtered[speed_cols].stack().mean() if speed_cols else None
     total_retip_variety = variety_filtered["retip"].sum() if "retip" in variety_filtered.columns else None
 
     if period_choice == "Yearly":
@@ -352,120 +571,151 @@ with tab_summary:
             .sum()
             .sort_values("year")
         )
-        x_col = "year"
-        chart_kind = "bar"
+        variety_chart_kind = "bar"
 
     elif period_choice == "Monthly":
-        variety_chart_base = summary_df[summary_df["year"] == selected_year].copy()
+        variety_chart_base = summary_df.copy()
         variety_chart_df = (
             variety_chart_base[variety_chart_base["variety"].astype(str) == selected_summary_variety]
-            .groupby("month_label", as_index=False)["bins_run"]
+            .groupby(["year", "month_num", "month_name"], as_index=False)["bins_run"]
             .sum()
-            .sort_values("month_label")
+            .sort_values(["month_num", "year"])
         )
-        x_col = "month_label"
-        chart_kind = "line"
+        variety_chart_kind = "multi_line"
 
     else:
-        variety_chart_base = summary_df[summary_df["month_label"] == selected_month].copy()
+        if selected_month == "All":
+            variety_chart_base = summary_df.copy()
+        else:
+            variety_chart_base = summary_df[summary_df["month_label"] == selected_month].copy()
+
         variety_chart_df = (
             variety_chart_base[variety_chart_base["variety"].astype(str) == selected_summary_variety]
             .groupby(["week_label", "week_start"], as_index=False)["bins_run"]
             .sum()
             .sort_values("week_start")
         )
-        x_col = "week_label"
-        chart_kind = "bar"
+        variety_chart_kind = "bar"
 
-    vleft1, vleft2, vright = st.columns([2.2, 1.7, 1])
+    vtop1, vtop2 = st.columns(2)
+    with vtop1:
+        st.metric("Variety Avg Speed", f"{avg_speed_variety:.1f}" if pd.notna(avg_speed_variety) else "N/A")
+    with vtop2:
+        st.metric("Variety Retip", f"{int(total_retip_variety):,}" if pd.notna(total_retip_variety) else "N/A")
 
-    with vleft1:
-        st.subheader("Total Bin Run")
-        if chart_kind == "bar":
+    vleft, vright = st.columns([2.2, 1.4])
+
+    with vleft:
+        st.subheader("Variety Bins Trend")
+
+        if variety_chart_kind == "bar":
+            x_col = "year" if period_choice == "Yearly" else "week_label"
             fig_v = px.bar(
                 variety_chart_df,
                 x=x_col,
                 y="bins_run",
                 labels={x_col: x_col.replace("_", " ").title(), "bins_run": "Total Bins"},
-                title="Variety Total Bin Run"
+                title="Variety Total Bins",
+                color_discrete_sequence=["#F59E0B"]
             )
         else:
             fig_v = px.line(
                 variety_chart_df,
-                x=x_col,
+                x="month_name",
                 y="bins_run",
+                color="year",
                 markers=True,
-                labels={x_col: x_col.replace("_", " ").title(), "bins_run": "Total Bins"},
-                title="Variety Total Bin Run"
+                category_orders={
+                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                    "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
+                },
+                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
+                title="Variety Monthly Comparison by Year"
             )
-        st.plotly_chart(fig_v, use_container_width=True)
 
-    with vleft2:
-        st.subheader("Total Bin by Grower")
-        st.dataframe(
-            bins_by_grower_variety.rename(columns={"bins_run": "total_bins"}),
-            use_container_width=True,
-            height=260
+            for trace in fig_v.data:
+                if str(trace.name) == str(selected_year):
+                    trace.line.width = 4
+                else:
+                    trace.line.width = 2
+
+            fig_v.update_layout(
+                legend_title_text="Year",
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02
+                )
+            )
+
+        fig_v.update_layout(
+            hovermode="x unified",
+            height=430,
+            margin=dict(l=20, r=20, t=50, b=20)
         )
 
-    with vright:
-        st.subheader("Average Speed")
-        st.metric("Bins / Hour", f"{avg_speed_variety:.1f}" if pd.notna(avg_speed_variety) else "N/A")
+        st.plotly_chart(fig_v, use_container_width=True)
 
-        st.subheader("Retip")
-        st.metric("Retip", f"{int(total_retip_variety)}" if pd.notna(total_retip_variety) else "N/A")
+    with vright:
+        st.subheader("Bins by Grower")
+
+        display_grower_table = bins_by_grower_variety.rename(columns={
+            "grower": "Grower",
+            "period": "Period",
+            "total_bins": "Total Bins"
+        })
+
+        if "Total Bins" in display_grower_table.columns:
+            display_grower_table["Total Bins"] = display_grower_table["Total Bins"].map(
+                lambda x: f"{int(x):,}" if pd.notna(x) else ""
+            )
+
+        st.dataframe(
+            display_grower_table.head(10),
+            use_container_width=True,
+            height=430
+        )
 
     # =========================
-    # DOWNTIME MINI SECTION
+    # DOWNTIME SUMMARY
     # =========================
     st.divider()
     st.subheader("Downtime Summary")
 
-    if downtime is not None and "run_date" in downtime.columns:
-        downtime_df = downtime.copy()
-        downtime_df = downtime_df.dropna(subset=["run_date"]).copy()
+    dt_left, dt_right = st.columns([1, 2.4])
 
-        if period_choice == "Yearly":
-            downtime_df["year"] = downtime_df["run_date"].dt.year.astype(int)
-            downtime_filtered = downtime_df[downtime_df["year"] == selected_year].copy()
-
-        elif period_choice == "Monthly":
-            downtime_df["year"] = downtime_df["run_date"].dt.year.astype(int)
-            downtime_df["month_label"] = downtime_df["run_date"].dt.to_period("M").astype(str)
-            downtime_filtered = downtime_df[downtime_df["month_label"] == selected_month].copy()
-
-        else:
-            downtime_df["month_label"] = downtime_df["run_date"].dt.to_period("M").astype(str)
-            downtime_df["week_start"] = downtime_df["run_date"] - pd.to_timedelta(downtime_df["run_date"].dt.weekday, unit="D")
-            downtime_df["week_label"] = "W/C " + downtime_df["week_start"].dt.strftime("%Y-%m-%d")
-            downtime_filtered = downtime_df[downtime_df["week_label"] == selected_week].copy()
-
+    with dt_left:
         total_downtime = downtime_filtered["duration_minutes"].sum() if "duration_minutes" in downtime_filtered.columns else None
+        st.metric("Total Downtime", f"{int(total_downtime):,} mins" if pd.notna(total_downtime) else "N/A")
 
-        top_area = "N/A"
-        if "downtime_area" in downtime_filtered.columns:
-            area_counts = downtime_filtered["downtime_area"].dropna().astype(str).value_counts()
-            if not area_counts.empty:
-                top_area = area_counts.index[0]
+    with dt_right:
+        downtime_table = pd.DataFrame(columns=["Downtime", "Area", "Reason"])
+        if not downtime_filtered.empty:
+            downtime_table = downtime_filtered.copy()
 
-        top_reason = "N/A"
-        if "downtime_reason" in downtime_filtered.columns:
-            reason_counts = downtime_filtered["downtime_reason"].dropna().astype(str).value_counts()
-            if not reason_counts.empty:
-                top_reason = reason_counts.index[0]
+            rename_map = {}
+            if "duration_minutes" in downtime_table.columns:
+                rename_map["duration_minutes"] = "Downtime"
+            if "downtime_area" in downtime_table.columns:
+                rename_map["downtime_area"] = "Area"
+            if "downtime_reason" in downtime_table.columns:
+                rename_map["downtime_reason"] = "Reason"
 
-        dt1, dt2, dt3 = st.columns(3)
+            downtime_table = downtime_table.rename(columns=rename_map)
 
-        with dt1:
-            st.metric("Total Downtime (mins)", f"{int(total_downtime)}" if pd.notna(total_downtime) else "N/A")
+            keep_cols = [c for c in ["Downtime", "Area", "Reason"] if c in downtime_table.columns]
+            downtime_table = downtime_table[keep_cols]
 
-        with dt2:
-            st.metric("Top Downtime Area", top_area)
+            if "Downtime" in downtime_table.columns:
+                downtime_table["Downtime"] = pd.to_numeric(downtime_table["Downtime"], errors="coerce")
+                downtime_table = downtime_table.sort_values("Downtime", ascending=False)
+                downtime_table["Downtime"] = downtime_table["Downtime"].map(
+                    lambda x: f"{int(x):,}" if pd.notna(x) else ""
+                )
 
-        with dt3:
-            st.metric("Top Downtime Reason", top_reason)
-    else:
-        st.info("No downtime data available.")
+        st.dataframe(downtime_table, use_container_width=True, height=260)
 
 # =========================================================
 # QUALITY TAB
