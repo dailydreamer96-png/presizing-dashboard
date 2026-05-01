@@ -137,7 +137,7 @@ batch_id,grower,variety,receival_date_min,receival_date_max,grower_block,decfile
 8570,acn_orchards,granny_smith,11/04/2026,11/04/2026,,,,,,,,,
 8571,pottenger,gala,16/02/2026,19/02/2026,,O004,holes,,,no,yes,50,red%:595
 8577,googs,gala,12/02/2026,19/02/2026,"G3,G5",O004,holes,sunburn,,no,yes,45,
-8581,bundara,gala,14/02/2026,14/02/2026,B4,O004,skin_marks,holes,sunburn,no,yes,45,red%:597
+8581,bundara,gala,14/02/2026,14/02/2026,B4,O004,marks_skin,holes,sunburn,no,yes,45,red%:597
 8583,mj_hall,modi,16/04/2026,16/04/2026,,O004,holes,russets,sunburn,no,no,80,gala dec file
 8590,ardrossan,kanzi,07/04/2026,09/04/2026,,N002,holes,stem_crack,lenticel,no,no,0,leaf_retip=no
 8591,plunketts,pink_lady,14/04/2026,15/04/2026,P7,O021,bruises,lenticel,holes,no,yes,40,red%:586
@@ -149,25 +149,8 @@ batch_id,grower,variety,receival_date_min,receival_date_max,grower_block,decfile
 8607,bundara,pink_lady,16/04/2026,16/04/2026,B15,O021,limrubs,major,bruises,no,yes,40,red%:586
 8610,plunketts,pink_lady,16/04/2026,18/04/2026,P18,O021,scab,insect,bruises,no,yes,40,red%:586
 8614,yuvi_bhinder_farm,granny_smith,23/04/2026,23/04/2026,,Z011,bruises,sunburn,leaf,yes,no,0,Office green%:433
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
-,,,,,,,,,,,,,
+8619,googs,gala,10/04/2026,12/04/2026,"G3,G5",O004,holes,sunburn,russets,no,yes,45,
+8622,bundara,gala,13/02/2026,13/02/2026,"B4,B6",O004,holes,sunburn,marks_skin,no,yes,45,
+8629,hazara,bravo,14/04/2026,17/04/2026,,J013,sunburn_major,major,hails_major,yes,no,0,
+8635,sciacca,granny_smith,28/04/2026,28/04/2026,contract,Z011,dirt,holes,leaf_calyx,no,no,0,new decfile applied
+8636,sciacca,pink_lady,28/04/2026,29/04/2026,contract,O021,dirt,bruises,holes,yes,no,0,
