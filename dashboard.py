@@ -85,6 +85,33 @@ for col in numeric_cols_runs:
 
 speed_cols = [c for c in ["Speed_12", "Speed_34", "Speed_56", "full_speed"] if c in runs.columns]
 
+time_cols = ["start_time", "end_time"]
+for col in time_cols:
+    if col in runs.columns:
+        runs[col] = runs[col].astype(str).str.strip()
+
+if all(col in runs.columns for col in ["run_date", "start_time", "end_time"]):
+    runs["start_dt"] = pd.to_datetime(
+        runs["run_date"].dt.strftime("%Y-%m-%d") + " " + runs["start_time"],
+        errors="coerce"
+    )
+    runs["end_dt"] = pd.to_datetime(
+        runs["run_date"].dt.strftime("%Y-%m-%d") + " " + runs["end_time"],
+        errors="coerce"
+    )
+
+    overnight_mask = runs["end_dt"] < runs["start_dt"]
+    runs.loc[overnight_mask, "end_dt"] = runs.loc[overnight_mask, "end_dt"] + pd.Timedelta(days=1)
+
+    runs["run_hours"] = (runs["end_dt"] - runs["start_dt"]).dt.total_seconds() / 3600
+    runs["total_bins_with_retip"] = runs["bins_run"].fillna(0) + runs["retip"].fillna(0)
+    runs["bins_per_hour_row"] = runs["total_bins_with_retip"] / runs["run_hours"]
+    runs.loc[runs["run_hours"] <= 0, "bins_per_hour_row"] = pd.NA
+else:
+    runs["run_hours"] = pd.NA
+    runs["total_bins_with_retip"] = runs["bins_run"].fillna(0) + runs["retip"].fillna(0)
+    runs["bins_per_hour_row"] = pd.NA
+
 # -----------------------------
 # Clean batches_raw
 # -----------------------------
@@ -106,9 +133,21 @@ if changes is not None:
     if "change_time" in changes.columns:
         changes["change_time"] = pd.to_datetime(changes["change_time"], errors="coerce")
 
+    # numeric only for real numeric columns
     for col in ["boundary_before", "boundary_after"]:
         if col in changes.columns:
             changes[col] = pd.to_numeric(changes[col], errors="coerce")
+
+    # text columns
+    for col in ["reason", "mode", "check_class", "action", "variety", "sensitivity", "accuracy"]:
+        if col in changes.columns:
+            changes[col] = (
+                changes[col]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", pd.NA)
+            )
 
 # -----------------------------
 # Clean downtime_raw
@@ -120,8 +159,18 @@ if downtime is not None:
         dt_try_2 = pd.to_datetime(downtime["run_date_raw"], yearfirst=True, errors="coerce")
         downtime["run_date"] = dt_try_1.fillna(dt_try_2)
 
-    if "duration_minutes" in downtime.columns:
-        downtime["duration_minutes"] = pd.to_numeric(downtime["duration_minutes"], errors="coerce")
+    if "duration_hours" in downtime.columns:
+        downtime["duration_hours"] = pd.to_numeric(downtime["duration_hours"], errors="coerce")
+
+    for col in ["downtime_area", "downtime_reason"]:
+        if col in downtime.columns:
+            downtime[col] = (
+                downtime[col]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", pd.NA)
+            )
 
 # -----------------------------
 # Tabs
@@ -329,8 +378,8 @@ with tab_summary:
                 prev_dt_filtered = downtime_df_for_kpi[downtime_df_for_kpi["week_label"] == prev_week].copy() if prev_week else pd.DataFrame()
 
         downtime_filtered = current_dt_filtered.copy()
-        current_downtime = current_dt_filtered["duration_minutes"].sum() if "duration_minutes" in current_dt_filtered.columns else None
-        prev_downtime = prev_dt_filtered["duration_minutes"].sum() if "duration_minutes" in prev_dt_filtered.columns and not prev_dt_filtered.empty else None
+        current_downtime = current_dt_filtered["duration_hours"].sum() if "duration_hours" in current_dt_filtered.columns else None
+        prev_downtime = prev_dt_filtered["duration_hours"].sum() if "duration_hours" in prev_dt_filtered.columns and not prev_dt_filtered.empty else None
 
     # =========================
     # KPI ROW
@@ -338,8 +387,20 @@ with tab_summary:
     current_total_bins = summary_filtered["bins_run"].sum() if "bins_run" in summary_filtered.columns else None
     prev_total_bins = previous_filtered["bins_run"].sum() if "bins_run" in previous_filtered.columns and not previous_filtered.empty else None
 
-    current_avg_speed = summary_filtered[speed_cols].stack().mean() if speed_cols else None
-    prev_avg_speed = previous_filtered[speed_cols].stack().mean() if speed_cols and not previous_filtered.empty else None
+    current_bins_per_hour = None
+    prev_bins_per_hour = None
+
+    if "total_bins_with_retip" in summary_filtered.columns and "run_hours" in summary_filtered.columns:
+        current_total_hours = summary_filtered["run_hours"].sum()
+        current_total_bins_for_speed = summary_filtered["total_bins_with_retip"].sum()
+        if pd.notna(current_total_hours) and current_total_hours > 0:
+            current_bins_per_hour = current_total_bins_for_speed / current_total_hours
+
+    if not previous_filtered.empty and "total_bins_with_retip" in previous_filtered.columns and "run_hours" in previous_filtered.columns:
+        prev_total_hours = previous_filtered["run_hours"].sum()
+        prev_total_bins_for_speed = previous_filtered["total_bins_with_retip"].sum()
+        if pd.notna(prev_total_hours) and prev_total_hours > 0:
+            prev_bins_per_hour = prev_total_bins_for_speed / prev_total_hours
 
     current_retip = summary_filtered["retip"].sum() if "retip" in summary_filtered.columns else None
     prev_retip = previous_filtered["retip"].sum() if "retip" in previous_filtered.columns and not previous_filtered.empty else None
@@ -356,9 +417,9 @@ with tab_summary:
 
     with k2:
         st.metric(
-            "Avg Speed",
-            f"{current_avg_speed:.1f}" if pd.notna(current_avg_speed) else "N/A",
-            delta=format_delta(current_avg_speed, prev_avg_speed, mode="float"),
+            "Bins / Hour",
+            f"{current_bins_per_hour:.1f}" if pd.notna(current_bins_per_hour) else "N/A",
+            delta=format_delta(current_bins_per_hour, prev_bins_per_hour, mode="float"),
             delta_color="normal"
         )
 
@@ -373,8 +434,8 @@ with tab_summary:
     with k4:
         st.metric(
             "Downtime",
-            f"{int(current_downtime):,} mins" if pd.notna(current_downtime) else "N/A",
-            delta=format_delta(current_downtime, prev_downtime, mode="number"),
+            f"{current_downtime:.2f} hrs" if pd.notna(current_downtime) else "N/A",
+            delta=format_delta(current_downtime, prev_downtime, mode="float"),
             delta_color="inverse"
         )
 
@@ -560,7 +621,13 @@ with tab_summary:
         )
         bins_by_grower_variety = bins_by_grower_variety[["grower", "period", "total_bins"]]
 
-    avg_speed_variety = variety_filtered[speed_cols].stack().mean() if speed_cols else None
+    variety_bins_per_hour = None
+    if "total_bins_with_retip" in variety_filtered.columns and "run_hours" in variety_filtered.columns:
+        variety_total_hours = variety_filtered["run_hours"].sum()
+        variety_total_bins_for_speed = variety_filtered["total_bins_with_retip"].sum()
+        if pd.notna(variety_total_hours) and variety_total_hours > 0:
+            variety_bins_per_hour = variety_total_bins_for_speed / variety_total_hours
+
     total_retip_variety = variety_filtered["retip"].sum() if "retip" in variety_filtered.columns else None
 
     if period_choice == "Yearly":
@@ -599,7 +666,7 @@ with tab_summary:
 
     vtop1, vtop2 = st.columns(2)
     with vtop1:
-        st.metric("Variety Avg Speed", f"{avg_speed_variety:.1f}" if pd.notna(avg_speed_variety) else "N/A")
+        st.metric("Variety Bins / Hour", f"{variety_bins_per_hour:.1f}" if pd.notna(variety_bins_per_hour) else "N/A")
     with vtop2:
         st.metric("Variety Retip", f"{int(total_retip_variety):,}" if pd.notna(total_retip_variety) else "N/A")
 
@@ -687,17 +754,17 @@ with tab_summary:
     dt_left, dt_right = st.columns([1, 2.4])
 
     with dt_left:
-        total_downtime = downtime_filtered["duration_minutes"].sum() if "duration_minutes" in downtime_filtered.columns else None
-        st.metric("Total Downtime", f"{int(total_downtime):,} mins" if pd.notna(total_downtime) else "N/A")
+        total_downtime = downtime_filtered["duration_hours"].sum() if "duration_hours" in downtime_filtered.columns else None
+        st.metric("Total Downtime", f"{total_downtime:.2f} hrs" if pd.notna(total_downtime) else "N/A")
 
     with dt_right:
-        downtime_table = pd.DataFrame(columns=["Downtime", "Area", "Reason"])
+        downtime_table = pd.DataFrame(columns=["Downtime (hrs)", "Area", "Reason"])
         if not downtime_filtered.empty:
             downtime_table = downtime_filtered.copy()
 
             rename_map = {}
-            if "duration_minutes" in downtime_table.columns:
-                rename_map["duration_minutes"] = "Downtime"
+            if "duration_hours" in downtime_table.columns:
+                rename_map["duration_hours"] = "Downtime (hrs)"
             if "downtime_area" in downtime_table.columns:
                 rename_map["downtime_area"] = "Area"
             if "downtime_reason" in downtime_table.columns:
@@ -705,14 +772,14 @@ with tab_summary:
 
             downtime_table = downtime_table.rename(columns=rename_map)
 
-            keep_cols = [c for c in ["Downtime", "Area", "Reason"] if c in downtime_table.columns]
+            keep_cols = [c for c in ["Downtime (hrs)", "Area", "Reason"] if c in downtime_table.columns]
             downtime_table = downtime_table[keep_cols]
 
-            if "Downtime" in downtime_table.columns:
-                downtime_table["Downtime"] = pd.to_numeric(downtime_table["Downtime"], errors="coerce")
-                downtime_table = downtime_table.sort_values("Downtime", ascending=False)
-                downtime_table["Downtime"] = downtime_table["Downtime"].map(
-                    lambda x: f"{int(x):,}" if pd.notna(x) else ""
+            if "Downtime (hrs)" in downtime_table.columns:
+                downtime_table["Downtime (hrs)"] = pd.to_numeric(downtime_table["Downtime (hrs)"], errors="coerce")
+                downtime_table = downtime_table.sort_values("Downtime (hrs)", ascending=False)
+                downtime_table["Downtime (hrs)"] = downtime_table["Downtime (hrs)"].map(
+                    lambda x: f"{x:.2f}" if pd.notna(x) else ""
                 )
 
         st.dataframe(downtime_table, use_container_width=True, height=260)
@@ -986,6 +1053,7 @@ with tab_quality:
 # =========================================================
 # MODE TAB
 # =========================================================
+
 with tab_mode:
     st.header("Mode")
 
@@ -1006,21 +1074,56 @@ with tab_mode:
         # Link runs -> batches
         if batches is not None and "batch_id" in mode_df.columns and "batch_id" in batches.columns:
             batch_link_cols = [
-                c for c in ["batch_id", "decfile_version", "defect_1", "defect_2", "defect_3"]
+                c for c in ["batch_id", "grower", "variety", "decfile_version", "defect_1", "defect_2", "defect_3"]
                 if c in batches.columns
             ]
             mode_df = mode_df.merge(
                 batches[batch_link_cols],
                 on="batch_id",
-                how="left"
+                how="left",
+                suffixes=("", "_batch")
             )
 
-        # -----------------------------
-        # Filters
-        # -----------------------------
-        f1, f2, f3 = st.columns(3)
+        # Clean text fields
+        for col in ["grower", "variety", "decfile_version", "mode", "check_class", "reason", "action", "sensitivity", "accuracy"]:
+            if col in mode_df.columns:
+                mode_df[col] = (
+                    mode_df[col]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .replace("", pd.NA)
+                )
 
-        with f1:
+        # Keep only boundary columns numeric
+        if "boundary_before" in mode_df.columns:
+            mode_df["boundary_before"] = pd.to_numeric(mode_df["boundary_before"], errors="coerce")
+        if "boundary_after" in mode_df.columns:
+            mode_df["boundary_after"] = pd.to_numeric(mode_df["boundary_after"], errors="coerce")
+
+        # Clean batches copy for top defects
+        if batches is not None:
+            batches_mode = batches.copy()
+            for col in ["grower", "variety", "decfile_version", "defect_1", "defect_2", "defect_3"]:
+                if col in batches_mode.columns:
+                    batches_mode[col] = (
+                        batches_mode[col]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .replace("", pd.NA)
+                    )
+        else:
+            batches_mode = None
+
+        # -----------------------------
+        # TOP ROW: Filters left / Top Defects right
+        # -----------------------------
+        top_left, top_right = st.columns([1.2, 1])
+
+        with top_left:
+            st.subheader("Filters")
+
             available_varieties = ["All"]
             if "variety" in mode_df.columns:
                 available_varieties += sorted(
@@ -1033,14 +1136,13 @@ with tab_mode:
                 key="mode_variety_selector"
             )
 
-        filtered_mode = mode_df.copy()
+            filtered_mode = mode_df.copy()
 
-        if selected_mode_variety != "All" and "variety" in filtered_mode.columns:
-            filtered_mode = filtered_mode[
-                filtered_mode["variety"].astype(str) == selected_mode_variety
-            ]
+            if selected_mode_variety != "All" and "variety" in filtered_mode.columns:
+                filtered_mode = filtered_mode[
+                    filtered_mode["variety"].astype(str) == selected_mode_variety
+                ]
 
-        with f2:
             available_growers = ["All"]
             if "grower" in filtered_mode.columns:
                 available_growers += sorted(
@@ -1053,12 +1155,11 @@ with tab_mode:
                 key="mode_grower_selector"
             )
 
-        if selected_mode_grower != "All" and "grower" in filtered_mode.columns:
-            filtered_mode = filtered_mode[
-                filtered_mode["grower"].astype(str) == selected_mode_grower
-            ]
+            if selected_mode_grower != "All" and "grower" in filtered_mode.columns:
+                filtered_mode = filtered_mode[
+                    filtered_mode["grower"].astype(str) == selected_mode_grower
+                ]
 
-        with f3:
             available_versions = ["All"]
             if "decfile_version" in filtered_mode.columns:
                 version_values = filtered_mode["decfile_version"].dropna().astype(str).unique().tolist()
@@ -1070,43 +1171,69 @@ with tab_mode:
                 key="mode_version_selector"
             )
 
-        if selected_version != "All" and "decfile_version" in filtered_mode.columns:
-            filtered_mode = filtered_mode[
-                filtered_mode["decfile_version"].astype(str) == selected_version
-            ]
+            if selected_version != "All" and "decfile_version" in filtered_mode.columns:
+                filtered_mode = filtered_mode[
+                    filtered_mode["decfile_version"].astype(str) == selected_version
+                ]
+
+        with top_right:
+            st.subheader("Top Defects")
+
+            top_defects_mode = pd.DataFrame(columns=["Defect", "Count"])
+
+            if batches_mode is not None:
+                filtered_batches_mode = batches_mode.copy()
+
+                if selected_mode_variety != "All" and "variety" in filtered_batches_mode.columns:
+                    filtered_batches_mode = filtered_batches_mode[
+                        filtered_batches_mode["variety"].astype(str) == selected_mode_variety
+                    ]
+
+                if selected_mode_grower != "All" and "grower" in filtered_batches_mode.columns:
+                    filtered_batches_mode = filtered_batches_mode[
+                        filtered_batches_mode["grower"].astype(str) == selected_mode_grower
+                    ]
+
+                if selected_version != "All" and "decfile_version" in filtered_batches_mode.columns:
+                    filtered_batches_mode = filtered_batches_mode[
+                        filtered_batches_mode["decfile_version"].astype(str) == selected_version
+                    ]
+
+                defect_cols = [c for c in ["defect_1", "defect_2", "defect_3"] if c in filtered_batches_mode.columns]
+                if defect_cols:
+                    mode_defects = (
+                        filtered_batches_mode[defect_cols]
+                        .melt(value_name="defect")["defect"]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                    )
+                    mode_defects = mode_defects[mode_defects != ""]
+                    if not mode_defects.empty:
+                        top_defects_mode = mode_defects.value_counts().reset_index()
+                        top_defects_mode.columns = ["Defect", "Count"]
+
+            if not top_defects_mode.empty:
+                st.dataframe(top_defects_mode, use_container_width=True, height=260)
+            else:
+                st.info("No defect data available for the current filters.")
 
         # -----------------------------
-        # Top defects table
-        # -----------------------------
-        st.subheader("Top Defects")
-
-        top_defects_mode = pd.DataFrame(columns=["defect", "count"])
-
-        defect_cols_mode = [c for c in ["defect_1", "defect_2", "defect_3"] if c in filtered_mode.columns]
-        if defect_cols_mode:
-            mode_defects = (
-                filtered_mode[defect_cols_mode]
-                .melt(value_name="defect")["defect"]
-                .dropna()
-                .astype(str)
-                .str.strip()
-            )
-            mode_defects = mode_defects[mode_defects != ""]
-            if not mode_defects.empty:
-                top_defects_mode = mode_defects.value_counts().reset_index()
-                top_defects_mode.columns = ["defect", "count"]
-
-        if not top_defects_mode.empty:
-            st.dataframe(top_defects_mode, use_container_width=True, height=240)
-        else:
-            st.info("No defect data available for the current filters.")
-
-        # -----------------------------
-        # Top adjusted mode table
+        # Top Adjusted Modes
         # -----------------------------
         st.subheader("Top Adjusted Modes")
 
-        adjusted_mode_table = pd.DataFrame(columns=["mode", "check_class", "count", "all_boundaries"])
+        adjusted_mode_table = pd.DataFrame(
+            columns=[
+                "Check",
+                "Mode",
+                "Check Class",
+                "Count",
+                "Reference Boundaries",
+                "Sensitivity",
+                "Accuracy"
+            ]
+        )
 
         if "mode" in filtered_mode.columns and "action" in filtered_mode.columns:
             adjusted = filtered_mode[
@@ -1129,35 +1256,56 @@ with tab_mode:
 
                     _, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
 
+                    sensitivity_text = ""
+                    if "sensitivity" in grp.columns:
+                        sensitivity_vals = sorted(set(grp["sensitivity"].dropna().astype(str)))
+                        sensitivity_text = ", ".join(sensitivity_vals)
+
+                    accuracy_text = ""
+                    if "accuracy" in grp.columns:
+                        accuracy_vals = sorted(set(grp["accuracy"].dropna().astype(str)))
+                        accuracy_text = ", ".join(accuracy_vals)
+
                     rows.append({
-                        "mode": mode_name,
-                        "check_class": check_class,
-                        "count": len(grp),
-                        "all_boundaries": allb
+                        "Check": False,
+                        "Mode": mode_name,
+                        "Check Class": check_class,
+                        "Count": len(grp),
+                        "Reference Boundaries": allb,
+                        "Sensitivity": sensitivity_text,
+                        "Accuracy": accuracy_text,
                     })
 
                 adjusted_mode_table = (
                     pd.DataFrame(rows)
-                    .sort_values(["count", "mode", "check_class"], ascending=[False, True, True])
+                    .sort_values(["Count", "Mode", "Check Class"], ascending=[False, True, True])
+                    .reset_index(drop=True)
                 )
 
         if not adjusted_mode_table.empty:
-            st.dataframe(adjusted_mode_table, use_container_width=True, height=320)
+            st.data_editor(
+                adjusted_mode_table,
+                use_container_width=True,
+                height=320,
+                hide_index=True,
+                column_config={
+                    "Check": st.column_config.CheckboxColumn("Check")
+                },
+                disabled=["Mode", "Check Class", "Count", "Reference Boundaries", "Sensitivity", "Accuracy"]
+            )
         else:
             st.info("No adjusted mode data available for the current filters.")
 
         # -----------------------------
-        # Defect selector from reasons
+        # Step 1 - Select the defect to investigate
         # -----------------------------
-        st.subheader("Defect Selector from Recorded Reasons")
+        st.subheader("Step 1 — Select the defect to investigate")
 
-        reason_mode_df = filtered_mode.copy()
-
-        available_reason_defects = []
-        if "reason" in reason_mode_df.columns:
+        available_reason_items = []
+        if "reason" in filtered_mode.columns:
             split_reasons = (
-                reason_mode_df["reason"]
-                .fillna("")
+                filtered_mode["reason"]
+                .dropna()
                 .astype(str)
                 .str.split(",")
                 .explode()
@@ -1165,81 +1313,233 @@ with tab_mode:
                 .str.strip()
             )
             split_reasons = split_reasons[split_reasons != ""]
-            available_reason_defects = sorted(split_reasons.dropna().unique().tolist())
+            available_reason_items = sorted(split_reasons.unique().tolist())
 
-        selected_reason_defect = st.selectbox(
-            "Select defect from recorded reasons",
-            ["All"] + available_reason_defects,
-            key="mode_reason_defect_selector"
+        selected_reason = st.selectbox(
+            "Select defect / reason",
+            ["All"] + available_reason_items,
+            key="mode_reason_selector"
         )
 
-        if selected_reason_defect != "All" and "reason" in reason_mode_df.columns and "mode" in reason_mode_df.columns:
-            reason_mode_df["reason_split"] = (
-                reason_mode_df["reason"]
+        related_modes = pd.DataFrame()
+
+        if selected_reason != "All":
+            reason_related_df = filtered_mode.copy()
+
+            reason_related_df["reason_item"] = (
+                reason_related_df["reason"]
                 .fillna("")
                 .astype(str)
                 .str.split(",")
             )
-            reason_mode_df = reason_mode_df.explode("reason_split")
-            reason_mode_df["reason_split"] = reason_mode_df["reason_split"].astype(str).str.strip()
+            reason_related_df = reason_related_df.explode("reason_item")
+            reason_related_df["reason_item"] = reason_related_df["reason_item"].astype(str).str.strip()
 
-            matched_df = reason_mode_df[
-                reason_mode_df["reason_split"].astype(str) == selected_reason_defect
+            reason_related_df = reason_related_df[
+                reason_related_df["reason_item"] == selected_reason
             ].copy()
 
-            if not matched_df.empty:
+            if not reason_related_df.empty:
+                rows = []
+                for keys, grp in reason_related_df.groupby(["mode", "check_class"], dropna=False):
+                    mode_name = keys[0]
+                    check_class = keys[1]
+
+                    _, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
+
+                    sensitivity_text = ""
+                    if "sensitivity" in grp.columns:
+                        sensitivity_vals = sorted(set(grp["sensitivity"].dropna().astype(str)))
+                        sensitivity_text = ", ".join(sensitivity_vals)
+
+                    accuracy_text = ""
+                    if "accuracy" in grp.columns:
+                        accuracy_vals = sorted(set(grp["accuracy"].dropna().astype(str)))
+                        accuracy_text = ", ".join(accuracy_vals)
+
+                    rows.append({
+                        "Mode": mode_name,
+                        "Check Class": check_class,
+                        "Count": len(grp),
+                        "Reference Boundaries": allb,
+                        "Sensitivity": sensitivity_text,
+                        "Accuracy": accuracy_text
+                    })
+
                 related_modes = (
-                    matched_df.groupby(["mode", "check_class"], as_index=False)
-                    .agg(
-                        count=("mode", "size"),
-                        boundaries=("boundary_after", lambda x: ", ".join(sorted(set(x.dropna().astype(str)))))
-                    )
-                    .sort_values(["count", "mode"], ascending=[False, True])
+                    pd.DataFrame(rows)
+                    .sort_values(["Count", "Mode"], ascending=[False, True])
                 )
 
-                st.write(f"Modes related to: {selected_reason_defect}")
                 st.dataframe(related_modes, use_container_width=True, height=260)
             else:
-                st.info("No matching modes found for this defect.")
+                st.info("No related modes found for this defect / reason.")
         else:
-            st.write("Choose a defect above to see related modes.")
+            st.write("Choose a defect / reason above to see related modes.")
 
         # -----------------------------
-        # Mode filter to show reasons
+        # Step 2 - Review what this mode can also detect
         # -----------------------------
-        st.subheader("Mode Reasons")
+        st.subheader("Step 2 — Review what this mode can also detect")
 
-        available_modes_bottom = []
-        if "mode" in filtered_mode.columns:
-            available_modes_bottom = sorted(filtered_mode["mode"].dropna().astype(str).unique().tolist())
+        mode_options_from_reason = []
+        if not related_modes.empty and "Mode" in related_modes.columns:
+            mode_options_from_reason = related_modes["Mode"].dropna().astype(str).unique().tolist()
 
-        selected_mode_bottom = st.selectbox(
-            "Select mode",
-            ["All"] + available_modes_bottom,
-            key="mode_reason_selector"
+        selected_related_mode = st.selectbox(
+            "Select a mode from the results",
+            ["All"] + sorted(mode_options_from_reason),
+            key="mode_related_mode_selector"
         )
 
-        if selected_mode_bottom != "All" and "mode" in filtered_mode.columns:
-            mode_reason_filtered = filtered_mode[
-                filtered_mode["mode"].astype(str) == selected_mode_bottom
+        if selected_related_mode != "All":
+            selected_mode_rows = filtered_mode[
+                filtered_mode["mode"].astype(str) == selected_related_mode
             ].copy()
 
-            if "reason" in mode_reason_filtered.columns:
-                reason_table = (
-                    mode_reason_filtered["reason"]
+            other_reason_counts = pd.DataFrame(columns=["Recorded Reason", "Count"])
+
+            if "reason" in selected_mode_rows.columns:
+                split_mode_reasons = (
+                    selected_mode_rows["reason"]
                     .dropna()
                     .astype(str)
+                    .str.split(",")
+                    .explode()
+                    .astype(str)
                     .str.strip()
-                    .value_counts()
-                    .reset_index()
                 )
-                reason_table.columns = ["reason", "count"]
+                split_mode_reasons = split_mode_reasons[split_mode_reasons != ""]
 
-                if not reason_table.empty:
-                    st.dataframe(reason_table, use_container_width=True, height=260)
-                else:
-                    st.info("No reasons recorded for this mode.")
+                if not split_mode_reasons.empty:
+                    other_reason_counts = split_mode_reasons.value_counts().reset_index()
+                    other_reason_counts.columns = ["Recorded Reason", "Count"]
+
+            if not other_reason_counts.empty:
+                st.write("Other detectable defects / reasons for this mode")
+
+                card_cols = st.columns(3)
+                for idx, row in other_reason_counts.iterrows():
+                    col = card_cols[idx % 3]
+                    with col:
+                        st.markdown(
+                            f"""
+                            <div style="
+                                border:1px solid #e5e7eb;
+                                border-radius:12px;
+                                padding:14px;
+                                margin-bottom:12px;
+                                background-color:#fafafa;
+                            ">
+                                <div style="font-size:16px; font-weight:600; margin-bottom:6px;">
+                                    {row['Recorded Reason']}
+                                </div>
+                                <div style="font-size:14px; color:#555;">
+                                    Count: {int(row['Count'])}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
             else:
-                st.info("No reason column available.")
+                st.info("No other recorded reasons found for this mode.")
         else:
-            st.write("Choose a mode above to see its recorded reasons.")
+            st.write("Select one mode above to see what else it is able to see.")
+
+        # -----------------------------
+        # Step 3 - Review unchecked modes for this grower
+        # -----------------------------
+        st.subheader("Step 3 — Review unchecked modes for this grower")
+
+        next_modes_table = pd.DataFrame(
+            columns=[
+                "Check",
+                "Mode",
+                "Check Class",
+                "Count",
+                "Reference Boundaries",
+                "Sensitivity",
+                "Accuracy"
+            ]
+        )
+
+        if selected_mode_variety != "All" and selected_mode_grower != "All":
+            # full database for this variety, not limited by grower
+            variety_mode_db = mode_df.copy()
+
+            if "variety" in variety_mode_db.columns:
+                variety_mode_db = variety_mode_db[
+                    variety_mode_db["variety"].astype(str) == selected_mode_variety
+                ]
+
+            if selected_version != "All" and "decfile_version" in variety_mode_db.columns:
+                variety_mode_db = variety_mode_db[
+                    variety_mode_db["decfile_version"].astype(str) == selected_version
+                ]
+
+            # modes already present for this grower under same variety
+            grower_mode_db = variety_mode_db.copy()
+            if "grower" in grower_mode_db.columns:
+                grower_mode_db = grower_mode_db[
+                    grower_mode_db["grower"].astype(str) == selected_mode_grower
+                ]
+
+            checked_pairs = set()
+            if not grower_mode_db.empty:
+                for keys, grp in grower_mode_db.groupby(["mode", "check_class"], dropna=False):
+                    checked_pairs.add((str(keys[0]), str(keys[1])))
+
+            rows = []
+            if not variety_mode_db.empty:
+                for keys, grp in variety_mode_db.groupby(["mode", "check_class"], dropna=False):
+                    mode_name = str(keys[0])
+                    check_class = str(keys[1])
+
+                    if (mode_name, check_class) in checked_pairs:
+                        continue
+
+                    _, allb = summarize_boundaries(grp["boundary_after"]) if "boundary_after" in grp.columns else ("", "")
+
+                    sensitivity_text = ""
+                    if "sensitivity" in grp.columns:
+                        sensitivity_vals = sorted(set(grp["sensitivity"].dropna().astype(str)))
+                        sensitivity_text = ", ".join(sensitivity_vals)
+
+                    accuracy_text = ""
+                    if "accuracy" in grp.columns:
+                        accuracy_vals = sorted(set(grp["accuracy"].dropna().astype(str)))
+                        accuracy_text = ", ".join(accuracy_vals)
+
+                    rows.append({
+                        "Check": False,
+                        "Mode": mode_name,
+                        "Check Class": check_class,
+                        "Count": len(grp),
+                        "Reference Boundaries": allb,
+                        "Sensitivity": sensitivity_text,
+                        "Accuracy": accuracy_text
+                    })
+
+            if rows:
+                next_modes_table = (
+                    pd.DataFrame(rows)
+                    .sort_values(["Count", "Mode", "Check Class"], ascending=[False, True, True])
+                    .reset_index(drop=True)
+                )
+
+        if selected_mode_variety == "All" or selected_mode_grower == "All":
+            st.write("Choose a specific variety and grower to see which modes are not yet checked for this grower.")
+        elif not next_modes_table.empty:
+            st.data_editor(
+                next_modes_table,
+                use_container_width=True,
+                height=280,
+                hide_index=True,
+                column_config={
+                    "Check": st.column_config.CheckboxColumn("Check")
+                },
+                disabled=["Mode", "Check Class", "Count", "Reference Boundaries", "Sensitivity", "Accuracy"]
+            )
+        else:
+            st.write("No additional unchecked modes found for this grower under the selected variety.")
+
