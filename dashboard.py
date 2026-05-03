@@ -6,6 +6,43 @@ import plotly.express as px
 st.set_page_config(page_title="Presizing Dashboard", layout="wide")
 st.title("Presizing Dashboard")
 
+st.set_page_config(
+    page_title="Presizing Dashboard",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 1.2rem;
+    padding-bottom: 2rem;
+    padding-left: 2rem;
+    padding-right: 2rem;
+}
+
+div[data-testid="stMetric"] {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    padding: 14px;
+    border-radius: 14px;
+}
+
+div[data-testid="stMetricLabel"] {
+    font-weight: 600;
+}
+
+div[data-testid="stDataFrame"] {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+h1, h2, h3 {
+    letter-spacing: -0.02em;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -161,6 +198,9 @@ if downtime is not None:
 
     if "duration_hours" in downtime.columns:
         downtime["duration_hours"] = pd.to_numeric(downtime["duration_hours"], errors="coerce")
+    elif "duration_minutes" in downtime.columns:
+        downtime["duration_minutes"] = pd.to_numeric(downtime["duration_minutes"], errors="coerce")
+        downtime["duration_hours"] = downtime["duration_minutes"] / 60
 
     for col in ["downtime_area", "downtime_reason"]:
         if col in downtime.columns:
@@ -181,24 +221,12 @@ tab_summary, tab_quality, tab_mode = st.tabs(["Summary", "Quality", "Mode"])
 # SUMMARY TAB
 # =========================================================
 with tab_summary:
-    st.header("Summary")
+    st.title("Summary")
 
     latest_date = runs["run_date"].max()
-    top_info_left, top_info_right = st.columns([2, 1])
-
-    with top_info_left:
-        st.caption(
-            f"Last updated: {latest_date.strftime('%Y-%m-%d')}"
-            if pd.notna(latest_date) else "Last updated: N/A"
-        )
-
-    with top_info_right:
-        st.caption("Overview of production, performance, and downtime")
-
-    period_choice = st.radio(
-        "Period Type",
-        ["Yearly", "Monthly", "Weekly"],
-        horizontal=True
+    st.caption(
+        f"Last updated: {latest_date.strftime('%Y-%m-%d')}"
+        if pd.notna(latest_date) else "Last updated: N/A"
     )
 
     summary_df = runs.copy()
@@ -219,49 +247,91 @@ with tab_summary:
 
         return f"{int(current - previous):+,.0f} vs prev"
 
-    # =========================
-    # YEARLY VIEW
-    # =========================
+    # -----------------------------
+    # Sidebar controls
+    # -----------------------------
+    with st.sidebar:
+        st.header("Summary Filters")
+
+        period_choice = st.radio(
+            "Period Type",
+            ["Yearly", "Monthly", "Weekly"]
+        )
+
+        selected_year = None
+        selected_month = None
+        selected_week = None
+        prev_year = None
+        prev_month = None
+        prev_week = None
+
+        if period_choice == "Yearly":
+            summary_df["year"] = summary_df["run_date"].dt.year.astype(int)
+            available_years = sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)
+            selected_year = st.selectbox("Select Year", available_years)
+
+        elif period_choice == "Monthly":
+            summary_df["year"] = summary_df["run_date"].dt.year.astype(int)
+            summary_df["month_num"] = summary_df["run_date"].dt.month
+            summary_df["month_name"] = summary_df["run_date"].dt.strftime("%b")
+            summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
+
+            available_years = sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)
+            selected_year = st.selectbox("Select Year", available_years)
+
+            year_df_sidebar = summary_df[summary_df["year"] == selected_year].copy()
+            available_months = (
+                year_df_sidebar["month_label"]
+                .dropna()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            selected_month = st.selectbox("Select Month", ["All"] + available_months)
+
+        else:
+            summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
+            summary_df["week_start"] = summary_df["run_date"] - pd.to_timedelta(summary_df["run_date"].dt.weekday, unit="D")
+            summary_df["week_label"] = "W/C " + summary_df["week_start"].dt.strftime("%Y-%m-%d")
+
+            available_months = (
+                summary_df["month_label"]
+                .dropna()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            selected_month = st.selectbox("Select Month", ["All"] + available_months)
+
+            if selected_month == "All":
+                month_df_sidebar = summary_df.copy()
+            else:
+                month_df_sidebar = summary_df[summary_df["month_label"] == selected_month].copy()
+
+            available_weeks = (
+                month_df_sidebar[["week_label", "week_start"]]
+                .drop_duplicates()
+                .sort_values("week_start")["week_label"]
+                .tolist()
+            )
+            selected_week = st.selectbox("Select Week", ["All"] + available_weeks)
+
+    # -----------------------------
+    # Build filtered datasets
+    # -----------------------------
     if period_choice == "Yearly":
-        summary_df["year"] = summary_df["run_date"].dt.year.astype(int)
-
-        available_years = sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)
-        selected_year = st.selectbox("Select Year", available_years)
-
         chart_df = (
             summary_df.groupby("year", as_index=False)["bins_run"]
             .sum()
             .sort_values("year")
         )
-
         summary_filtered = summary_df[summary_df["year"] == selected_year].copy()
         selected_period_label = str(selected_year)
-
         prev_year = selected_year - 1
         previous_filtered = summary_df[summary_df["year"] == prev_year].copy()
 
-    # =========================
-    # MONTHLY VIEW
-    # =========================
     elif period_choice == "Monthly":
-        summary_df["year"] = summary_df["run_date"].dt.year.astype(int)
-        summary_df["month_num"] = summary_df["run_date"].dt.month
-        summary_df["month_name"] = summary_df["run_date"].dt.strftime("%b")
-        summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
-
-        available_years = sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)
-        selected_year = st.selectbox("Select Year", available_years)
-
         year_df = summary_df[summary_df["year"] == selected_year].copy()
-
-        available_months = (
-            year_df["month_label"]
-            .dropna()
-            .drop_duplicates()
-            .sort_values()
-            .tolist()
-        )
-        selected_month = st.selectbox("Select Month", ["All"] + available_months)
 
         chart_df = (
             summary_df.groupby(["year", "month_num", "month_name"], as_index=False)["bins_run"]
@@ -272,46 +342,27 @@ with tab_summary:
         if selected_month == "All":
             summary_filtered = year_df.copy()
             selected_period_label = f"{selected_year} (All Months)"
-            prev_month = None
             previous_filtered = pd.DataFrame()
         else:
             summary_filtered = year_df[year_df["month_label"] == selected_month].copy()
             selected_period_label = selected_month
 
-            month_order = available_months
-            current_idx = month_order.index(selected_month)
-            prev_month = month_order[current_idx - 1] if current_idx > 0 else None
+            available_months = (
+                year_df["month_label"]
+                .dropna()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            current_idx = available_months.index(selected_month)
+            prev_month = available_months[current_idx - 1] if current_idx > 0 else None
             previous_filtered = year_df[year_df["month_label"] == prev_month].copy() if prev_month else pd.DataFrame()
 
-    # =========================
-    # WEEKLY VIEW
-    # =========================
     else:
-        summary_df["month_label"] = summary_df["run_date"].dt.to_period("M").astype(str)
-        summary_df["week_start"] = summary_df["run_date"] - pd.to_timedelta(summary_df["run_date"].dt.weekday, unit="D")
-        summary_df["week_label"] = "W/C " + summary_df["week_start"].dt.strftime("%Y-%m-%d")
-
-        available_months = (
-            summary_df["month_label"]
-            .dropna()
-            .drop_duplicates()
-            .sort_values()
-            .tolist()
-        )
-        selected_month = st.selectbox("Select Month", ["All"] + available_months)
-
         if selected_month == "All":
             month_df = summary_df.copy()
         else:
             month_df = summary_df[summary_df["month_label"] == selected_month].copy()
-
-        available_weeks = (
-            month_df[["week_label", "week_start"]]
-            .drop_duplicates()
-            .sort_values("week_start")["week_label"]
-            .tolist()
-        )
-        selected_week = st.selectbox("Select Week", ["All"] + available_weeks)
 
         chart_df = (
             month_df.groupby(["week_label", "week_start"], as_index=False)["bins_run"]
@@ -321,30 +372,34 @@ with tab_summary:
 
         if selected_week == "All":
             summary_filtered = month_df.copy()
-            if selected_month == "All":
-                selected_period_label = "All Weeks"
-            else:
-                selected_period_label = f"{selected_month} (All Weeks)"
-            prev_week = None
+            selected_period_label = "All Weeks" if selected_month == "All" else f"{selected_month} (All Weeks)"
             previous_filtered = pd.DataFrame()
         else:
             summary_filtered = month_df[month_df["week_label"] == selected_week].copy()
             selected_period_label = selected_week
 
-            week_order = available_weeks
-            current_idx = week_order.index(selected_week)
-            prev_week = week_order[current_idx - 1] if current_idx > 0 else None
+            available_weeks = (
+                month_df[["week_label", "week_start"]]
+                .drop_duplicates()
+                .sort_values("week_start")["week_label"]
+                .tolist()
+            )
+            current_idx = available_weeks.index(selected_week)
+            prev_week = available_weeks[current_idx - 1] if current_idx > 0 else None
             previous_filtered = month_df[month_df["week_label"] == prev_week].copy() if prev_week else pd.DataFrame()
 
-    # =========================
-    # DOWNTIME FILTER FOR CURRENT PERIOD
-    # =========================
+    # -----------------------------
+    # Downtime filtered
+    # -----------------------------
     current_downtime = None
     prev_downtime = None
     downtime_filtered = pd.DataFrame()
 
     if downtime is not None and "run_date" in downtime.columns:
         downtime_df_for_kpi = downtime.copy().dropna(subset=["run_date"]).copy()
+
+        if "duration_hours" not in downtime_df_for_kpi.columns and "duration_minutes" in downtime_df_for_kpi.columns:
+            downtime_df_for_kpi["duration_hours"] = pd.to_numeric(downtime_df_for_kpi["duration_minutes"], errors="coerce") / 60
 
         if period_choice == "Yearly":
             downtime_df_for_kpi["year"] = downtime_df_for_kpi["run_date"].dt.year.astype(int)
@@ -381,9 +436,9 @@ with tab_summary:
         current_downtime = current_dt_filtered["duration_hours"].sum() if "duration_hours" in current_dt_filtered.columns else None
         prev_downtime = prev_dt_filtered["duration_hours"].sum() if "duration_hours" in prev_dt_filtered.columns and not prev_dt_filtered.empty else None
 
-    # =========================
-    # KPI ROW
-    # =========================
+    # -----------------------------
+    # KPI values
+    # -----------------------------
     current_total_bins = summary_filtered["bins_run"].sum() if "bins_run" in summary_filtered.columns else None
     prev_total_bins = previous_filtered["bins_run"].sum() if "bins_run" in previous_filtered.columns and not previous_filtered.empty else None
 
@@ -405,6 +460,9 @@ with tab_summary:
     current_retip = summary_filtered["retip"].sum() if "retip" in summary_filtered.columns else None
     prev_retip = previous_filtered["retip"].sum() if "retip" in previous_filtered.columns and not previous_filtered.empty else None
 
+    # -----------------------------
+    # KPI row
+    # -----------------------------
     k1, k2, k3, k4 = st.columns(4)
 
     with k1:
@@ -439,9 +497,11 @@ with tab_summary:
             delta_color="inverse"
         )
 
-    # =========================
-    # MAIN OVERVIEW ROW
-    # =========================
+    st.markdown("")
+
+    # -----------------------------
+    # Main overview row
+    # -----------------------------
     bins_by_variety = (
         summary_filtered.groupby("variety", as_index=False)["bins_run"]
         .sum()
@@ -454,12 +514,12 @@ with tab_summary:
         if total_bins_period else 0
     )
 
-    display_bins_by_variety = bins_by_variety.copy()
-    display_bins_by_variety = display_bins_by_variety.rename(columns={
+    display_bins_by_variety = bins_by_variety.rename(columns={
         "variety": "Variety",
         "bins_run": "Total Bins",
         "share_pct": "Share %"
-    })
+    }).copy()
+
     if "Total Bins" in display_bins_by_variety.columns:
         display_bins_by_variety["Total Bins"] = display_bins_by_variety["Total Bins"].map(
             lambda x: f"{int(x):,}" if pd.notna(x) else ""
@@ -469,81 +529,85 @@ with tab_summary:
             lambda x: f"{x:.1f}%"
         )
 
-    main_left, main_right = st.columns([2.2, 1.4])
+    main_left, main_right = st.columns([2.2, 1.2])
 
     with main_left:
-        st.subheader("Total Bins Trend")
+        with st.container(border=True):
+            st.subheader("Total Bins Trend")
 
-        if period_choice == "Yearly":
-            fig = px.bar(
-                chart_df,
-                x="year",
-                y="bins_run",
-                labels={"year": "Year", "bins_run": "Total Bins"},
-                title="Total Bins by Year",
-                color_discrete_sequence=["#3B82F6"]
-            )
-            fig.update_xaxes(type="category")
+            if period_choice == "Yearly":
+                fig = px.bar(
+                    chart_df,
+                    x="year",
+                    y="bins_run",
+                    labels={"year": "Year", "bins_run": "Total Bins"},
+                    title="Total Bins by Year",
+                    color_discrete_sequence=["#3B82F6"]
+                )
+                fig.update_xaxes(type="category")
 
-        elif period_choice == "Monthly":
-            fig = px.line(
-                chart_df,
-                x="month_name",
-                y="bins_run",
-                color="year",
-                markers=True,
-                category_orders={
-                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-                    "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
-                },
-                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
-                title="Monthly Comparison by Year"
-            )
-            for trace in fig.data:
-                if str(trace.name) == str(selected_year):
-                    trace.line.width = 4
-                else:
-                    trace.line.width = 2
+            elif period_choice == "Monthly":
+                fig = px.line(
+                    chart_df,
+                    x="month_name",
+                    y="bins_run",
+                    color="year",
+                    markers=True,
+                    category_orders={
+                        "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                        "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
+                    },
+                    labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
+                    title="Monthly Comparison by Year"
+                )
+                for trace in fig.data:
+                    if str(trace.name) == str(selected_year):
+                        trace.line.width = 4
+                    else:
+                        trace.line.width = 2
+
+                fig.update_layout(
+                    legend_title_text="Year",
+                    legend=dict(
+                        orientation="v",
+                        yanchor="top",
+                        y=1,
+                        xanchor="left",
+                        x=1.02
+                    )
+                )
+
+            else:
+                fig = px.bar(
+                    chart_df,
+                    x="week_label",
+                    y="bins_run",
+                    labels={"week_label": "Week", "bins_run": "Total Bins"},
+                    title="Weekly Bins",
+                    color_discrete_sequence=["#3B82F6"]
+                )
 
             fig.update_layout(
-                legend_title_text="Year",
-                legend=dict(
-                    orientation="v",
-                    yanchor="top",
-                    y=1,
-                    xanchor="left",
-                    x=1.02
-                )
+                hovermode="x unified",
+                height=420,
+                margin=dict(l=20, r=20, t=50, b=20)
             )
-
-        else:
-            fig = px.bar(
-                chart_df,
-                x="week_label",
-                y="bins_run",
-                labels={"week_label": "Week", "bins_run": "Total Bins"},
-                title="Weekly Bins",
-                color_discrete_sequence=["#3B82F6"]
-            )
-
-        fig.update_layout(
-            hovermode="x unified",
-            height=430,
-            margin=dict(l=20, r=20, t=50, b=20)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
     with main_right:
-        st.subheader(f"Bins by Variety ({selected_period_label})")
-        st.dataframe(
-            display_bins_by_variety.head(10),
-            use_container_width=True,
-            height=430
-        )
+        with st.container(border=True):
+            st.subheader(f"Bins by Variety ({selected_period_label})")
+            st.dataframe(
+                display_bins_by_variety.head(10),
+                use_container_width=True,
+                height=420
+            )
 
-    # =========================
-    # TOP CONTRIBUTORS
-    # =========================
+    st.markdown("")
+
+    # -----------------------------
+    # Top contributors row
+    # -----------------------------
     grower_bins = (
         summary_filtered.groupby("grower", as_index=False)["bins_run"]
         .sum()
@@ -574,20 +638,18 @@ with tab_summary:
 
     with t1:
         st.metric("Top Variety", top_variety)
-
     with t2:
         st.metric("Top Grower", top_grower)
-
     with t3:
         st.metric("Retip Focus Grower", retip_focus_grower)
-
     with t4:
         st.metric("Top Downtime Area", top_downtime_area)
 
-    # =========================
-    # VARIETY SUMMARY
-    # =========================
-    st.divider()
+    st.markdown("")
+
+    # -----------------------------
+    # Variety summary section
+    # -----------------------------
     st.subheader("Variety Summary")
 
     available_varieties = sorted(summary_filtered["variety"].dropna().astype(str).unique().tolist())
@@ -664,125 +726,130 @@ with tab_summary:
         )
         variety_chart_kind = "bar"
 
-    vtop1, vtop2 = st.columns(2)
-    with vtop1:
+    vk1, vk2 = st.columns(2)
+    with vk1:
         st.metric("Variety Bins / Hour", f"{variety_bins_per_hour:.1f}" if pd.notna(variety_bins_per_hour) else "N/A")
-    with vtop2:
+    with vk2:
         st.metric("Variety Retip", f"{int(total_retip_variety):,}" if pd.notna(total_retip_variety) else "N/A")
 
-    vleft, vright = st.columns([2.2, 1.4])
+    vleft, vright = st.columns([2.2, 1.2])
 
     with vleft:
-        st.subheader("Variety Bins Trend")
+        with st.container(border=True):
+            st.subheader("Variety Bins Trend")
 
-        if variety_chart_kind == "bar":
-            x_col = "year" if period_choice == "Yearly" else "week_label"
-            fig_v = px.bar(
-                variety_chart_df,
-                x=x_col,
-                y="bins_run",
-                labels={x_col: x_col.replace("_", " ").title(), "bins_run": "Total Bins"},
-                title="Variety Total Bins",
-                color_discrete_sequence=["#F59E0B"]
-            )
-        else:
-            fig_v = px.line(
-                variety_chart_df,
-                x="month_name",
-                y="bins_run",
-                color="year",
-                markers=True,
-                category_orders={
-                    "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-                    "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
-                },
-                labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
-                title="Variety Monthly Comparison by Year"
-            )
+            if variety_chart_kind == "bar":
+                x_col = "year" if period_choice == "Yearly" else "week_label"
+                fig_v = px.bar(
+                    variety_chart_df,
+                    x=x_col,
+                    y="bins_run",
+                    labels={x_col: x_col.replace("_", " ").title(), "bins_run": "Total Bins"},
+                    title="Variety Total Bins",
+                    color_discrete_sequence=["#F59E0B"]
+                )
+            else:
+                fig_v = px.line(
+                    variety_chart_df,
+                    x="month_name",
+                    y="bins_run",
+                    color="year",
+                    markers=True,
+                    category_orders={
+                        "month_name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                        "year": [str(y) for y in sorted(summary_df["year"].dropna().unique().tolist(), reverse=True)]
+                    },
+                    labels={"month_name": "Month", "bins_run": "Total Bins", "year": "Year"},
+                    title="Variety Monthly Comparison by Year"
+                )
 
-            for trace in fig_v.data:
-                if str(trace.name) == str(selected_year):
-                    trace.line.width = 4
-                else:
-                    trace.line.width = 2
+                for trace in fig_v.data:
+                    if str(trace.name) == str(selected_year):
+                        trace.line.width = 4
+                    else:
+                        trace.line.width = 2
+
+                fig_v.update_layout(
+                    legend_title_text="Year",
+                    legend=dict(
+                        orientation="v",
+                        yanchor="top",
+                        y=1,
+                        xanchor="left",
+                        x=1.02
+                    )
+                )
 
             fig_v.update_layout(
-                legend_title_text="Year",
-                legend=dict(
-                    orientation="v",
-                    yanchor="top",
-                    y=1,
-                    xanchor="left",
-                    x=1.02
-                )
+                hovermode="x unified",
+                height=420,
+                margin=dict(l=20, r=20, t=50, b=20)
             )
-
-        fig_v.update_layout(
-            hovermode="x unified",
-            height=430,
-            margin=dict(l=20, r=20, t=50, b=20)
-        )
-
-        st.plotly_chart(fig_v, use_container_width=True)
+            st.plotly_chart(fig_v, use_container_width=True)
 
     with vright:
-        st.subheader("Bins by Grower")
+        with st.container(border=True):
+            st.subheader("Bins by Grower")
 
-        display_grower_table = bins_by_grower_variety.rename(columns={
-            "grower": "Grower",
-            "period": "Period",
-            "total_bins": "Total Bins"
-        })
+            display_grower_table = bins_by_grower_variety.rename(columns={
+                "grower": "Grower",
+                "period": "Period",
+                "total_bins": "Total Bins"
+            })
 
-        if "Total Bins" in display_grower_table.columns:
-            display_grower_table["Total Bins"] = display_grower_table["Total Bins"].map(
-                lambda x: f"{int(x):,}" if pd.notna(x) else ""
+            if "Total Bins" in display_grower_table.columns:
+                display_grower_table["Total Bins"] = display_grower_table["Total Bins"].map(
+                    lambda x: f"{int(x):,}" if pd.notna(x) else ""
+                )
+
+            st.dataframe(
+                display_grower_table.head(10),
+                use_container_width=True,
+                height=420
             )
 
-        st.dataframe(
-            display_grower_table.head(10),
-            use_container_width=True,
-            height=430
-        )
+    st.markdown("")
 
-    # =========================
-    # DOWNTIME SUMMARY
-    # =========================
-    st.divider()
+    # -----------------------------
+    # Downtime section
+    # -----------------------------
     st.subheader("Downtime Summary")
 
     dt_left, dt_right = st.columns([1, 2.4])
 
     with dt_left:
-        total_downtime = downtime_filtered["duration_hours"].sum() if "duration_hours" in downtime_filtered.columns else None
-        st.metric("Total Downtime", f"{total_downtime:.2f} hrs" if pd.notna(total_downtime) else "N/A")
+        with st.container(border=True):
+            total_downtime = downtime_filtered["duration_hours"].sum() if "duration_hours" in downtime_filtered.columns else None
+            st.metric("Total Downtime", f"{total_downtime:.2f} hrs" if pd.notna(total_downtime) else "N/A")
 
     with dt_right:
-        downtime_table = pd.DataFrame(columns=["Downtime (hrs)", "Area", "Reason"])
-        if not downtime_filtered.empty:
-            downtime_table = downtime_filtered.copy()
+        with st.container(border=True):
+            downtime_table = pd.DataFrame(columns=["Downtime (hrs)", "Area", "Reason"])
+            if not downtime_filtered.empty:
+                downtime_table = downtime_filtered.copy()
 
-            rename_map = {}
-            if "duration_hours" in downtime_table.columns:
-                rename_map["duration_hours"] = "Downtime (hrs)"
-            if "downtime_area" in downtime_table.columns:
-                rename_map["downtime_area"] = "Area"
-            if "downtime_reason" in downtime_table.columns:
-                rename_map["downtime_reason"] = "Reason"
+                rename_map = {}
+                if "duration_hours" in downtime_table.columns:
+                    rename_map["duration_hours"] = "Downtime (hrs)"
+                if "downtime_area" in downtime_table.columns:
+                    rename_map["downtime_area"] = "Area"
+                if "downtime_reason" in downtime_table.columns:
+                    rename_map["downtime_reason"] = "Reason"
 
-            downtime_table = downtime_table.rename(columns=rename_map)
+                downtime_table = downtime_table.rename(columns=rename_map)
 
-            keep_cols = [c for c in ["Downtime (hrs)", "Area", "Reason"] if c in downtime_table.columns]
-            downtime_table = downtime_table[keep_cols]
+                keep_cols = [c for c in ["Downtime (hrs)", "Area", "Reason"] if c in downtime_table.columns]
+                downtime_table = downtime_table[keep_cols]
 
-            if "Downtime (hrs)" in downtime_table.columns:
-                downtime_table["Downtime (hrs)"] = pd.to_numeric(downtime_table["Downtime (hrs)"], errors="coerce")
-                downtime_table = downtime_table.sort_values("Downtime (hrs)", ascending=False)
-                downtime_table["Downtime (hrs)"] = downtime_table["Downtime (hrs)"].map(
-                    lambda x: f"{x:.2f}" if pd.notna(x) else ""
-                )
+                if "Downtime (hrs)" in downtime_table.columns:
+                    downtime_table["Downtime (hrs)"] = pd.to_numeric(downtime_table["Downtime (hrs)"], errors="coerce")
+                    downtime_table = downtime_table.sort_values("Downtime (hrs)", ascending=False)
+                    downtime_table["Downtime (hrs)"] = downtime_table["Downtime (hrs)"].map(
+                        lambda x: f"{x:.2f}" if pd.notna(x) else ""
+                    )
 
-        st.dataframe(downtime_table, use_container_width=True, height=260)
+            st.dataframe(downtime_table, use_container_width=True, height=260)
+
 
 # =========================================================
 # QUALITY TAB
